@@ -1,0 +1,12 @@
+{
+  "name": "factory",
+  "owner": { "name": "Peter Argue" },
+  "metadata": { "description": "Private marketplace for the software factory plugin" },
+  "plugins": [
+    {
+      "name": "factory",
+      "source": "./plugins/factory",
+      "description": "Spec-to-production pipeline: spec, build, review, roll out, and improve, driven by each repo's FACTORY.md"
+    }
+  ]
+}

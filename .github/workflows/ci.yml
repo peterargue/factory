@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Factory scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Shell syntax
+        run: for f in plugins/factory/hooks/*.sh plugins/factory/scripts/*.sh tests/*.sh; do bash -n "$f"; done
+      - name: Manifests parse
+        run: jq -e . .claude-plugin/marketplace.json plugins/factory/.claude-plugin/plugin.json plugins/factory/hooks/hooks.json >/dev/null
+      - name: Scripts resolve the caller's repository
+        run: tests/check-repo-root.sh
+      # Moved from tsglobal-ca/platform's ci.yml with the scripts they test.
+      - name: The review backstop's queries still work
+        run: tests/check-review-queries.sh
+      - name: The review verdict still reads its marker correctly
+        run: tests/check-review-verdict.sh
+      - name: CI results are still attributed to the head commit
+        run: tests/check-head-checks-verdict.sh
