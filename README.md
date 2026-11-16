@@ -24,12 +24,13 @@ Everything runs as native Claude Code (CLI, cloud sessions, scheduled tasks and
 
 1. Copy `plugins/factory/templates/FACTORY.md` to the repo root and fill in every value.
    Its presence is what turns the hooks and scripts on.
-2. Enable the plugin for everyone working in the repo, in its `.claude/settings.json`:
+2. Enable the plugin. Project threads get it only from **Project settings → Plugins**;
+   local sessions get it from the repo's `.claude/settings.json`:
 
    ```json
    {
      "extraKnownMarketplaces": {
-       "factory": { "source": { "source": "github", "repo": "<owner>/factory" } }
+       "factory": { "source": { "source": "github", "repo": "peterargue/factory" } }
      },
      "enabledPlugins": { "factory@factory": true }
    }
@@ -49,14 +50,16 @@ Everything runs as native Claude Code (CLI, cloud sessions, scheduled tasks and
      cancel-in-progress: true
    jobs:
      review:
-       uses: <owner>/factory/.github/workflows/claude-review.yml@v0.1.0
+       uses: peterargue/factory/.github/workflows/claude-review.yml@v0.1.0
        secrets: inherit   # CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`
    ```
 
    GitHub only lets a private reusable workflow be called from repos with the same
-   owner, and only after this repo's **Settings → Actions → Access** allows it. The
-   check then reports as `review / Claude review`, so a ruleset that required
-   `Claude review` must be updated to the new name.
+   owner, so this works for repos under `peterargue`, and only after this repo's
+   **Settings → Actions → Access** allows it. A repo under another owner, such as
+   `tsglobal-ca/platform`, keeps its own copy of the workflow instead. The called check
+   reports as `review / Claude review`, so a ruleset that required `Claude review`
+   must be updated to the new name.
 
 ## Changing the factory
 
