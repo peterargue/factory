@@ -27,12 +27,9 @@
 # rule holds whichever of the two is installed.
 #
 # GATE STAMP. `ready` requires a green gate for exactly the tree that is pushed,
-# checked rather than remembered. The stamp belongs to gate-stamp.sh: when it
-# exists, `gate` calls `gate-stamp.sh --record` after a green run and `ready` calls
-# `gate-stamp.sh --check`. Until it lands, this script writes and reads the same
-# stamp itself, `$(git rev-parse --git-common-dir)/factory/gate-<HEAD^{tree}>`, keyed
-# by tree in the shared git dir so a gate run in another worktree on the same tree
-# counts. Never a silent pass: no stamp, no ready.
+# checked rather than remembered. The stamp belongs to gate-stamp.sh, beside this
+# script: `gate` calls `gate-stamp.sh --record` after a green run and `ready` calls
+# `gate-stamp.sh --check`. If it is missing, both refuse. No stamp, no ready.
 #
 # FIX ROUNDS. `wait` counts CI failures per PR in `<git-dir>/factory/pr-<n>-ci-fails`
 # and resets on green. Up to PR_CYCLE_MAX_FIX_ROUNDS (default 2) failures exit 1:
@@ -73,7 +70,6 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || die 2 "not inside a git wor
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || die 2 "cannot resolve the script's directory."
 hooks_dir=$(cd "$here/../hooks" && pwd) || die 2 "cannot find the plugin's hooks beside $here."
 git_dir=$(git rev-parse --absolute-git-dir) || die 2 "cannot resolve the git dir."
-common_dir=$(cd "$(git rev-parse --git-common-dir)" && pwd) || die 2 "cannot resolve the common git dir."
 state_dir="$git_dir/factory"
 stamp_tool="$here/gate-stamp.sh"
 factory_md="$root/FACTORY.md"
@@ -106,15 +102,9 @@ pr_json() {
   printf '%s' "$out"
 }
 
-stamp_record() {
-  if [ -x "$stamp_tool" ]; then "$stamp_tool" --record --dir "$root"; return; fi
-  mkdir -p "$common_dir/factory" && git -C "$root" rev-parse HEAD >"$common_dir/factory/gate-$(git -C "$root" rev-parse 'HEAD^{tree}')"
-}
+stamp_record() { [ -x "$stamp_tool" ] || die 2 "$stamp_tool is missing; the plugin is incomplete."; "$stamp_tool" --record --dir "$root"; }
 # stamp_check — 0 when a green gate is stamped for HEAD's tree and the tree is clean.
-stamp_check() {
-  if [ -x "$stamp_tool" ]; then "$stamp_tool" --check --dir "$root"; return; fi
-  tree_clean && [ -f "$common_dir/factory/gate-$(git -C "$root" rev-parse 'HEAD^{tree}')" ]
-}
+stamp_check() { [ -x "$stamp_tool" ] || die 2 "$stamp_tool is missing; the plugin is incomplete."; "$stamp_tool" --check --dir "$root"; }
 
 tree_clean() { [ -z "$(git -C "$root" status --porcelain 2>/dev/null)" ]; }
 
