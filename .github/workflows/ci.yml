@@ -31,3 +31,5 @@ jobs:
         run: tests/check-pr-cycle.sh
       - name: The ready gate refuses an unverified ready
         run: tests/check-deny-unverified-ready.sh
+      - name: pr-review-comments reads threads in cloud sessions
+        run: tests/check-pr-review-comments.sh

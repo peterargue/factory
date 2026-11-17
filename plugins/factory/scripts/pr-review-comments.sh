@@ -43,6 +43,12 @@
 # Read-only: every call is a GET or a GraphQL query. It never comments, merges,
 # resolves or closes.
 #
+# Cloud sessions get HTTP 403 on GitHub GraphQL, so everything here is REST except
+# the thread query, which tries GraphQL and falls back to the cloud proxy's
+# `pulls/<n>/ccr/review_threads`. That route carries no thread id, so in cloud the
+# handle printed for a thread is its first comment id, which is what the proxy's
+# `ccr/comments/<id>/resolve` and the GitHub connector's resolve take.
+#
 # Usage:
 #   "${CLAUDE_PLUGIN_ROOT}"/scripts/pr-review-comments.sh 270
 
@@ -105,8 +111,8 @@ fetch() {
 }
 
 # Confirm the PR exists before reporting emptiness as a finding.
-title=$(gh pr view "$pr" --json number,title,state \
-  -q '"#\(.number) [\(.state)] \(.title)"' 2>&1)
+title=$(gh api "repos/{owner}/{repo}/pulls/$pr" \
+  --jq '"#\(.number) [\(if .merged_at then "MERGED" else (.state | ascii_upcase) end)] \(.title)"' 2>&1)
 # shellcheck disable=SC2181
 if [ $? -ne 0 ]; then
   echo "pr-review-comments: cannot read PR #$pr." >&2
@@ -127,8 +133,8 @@ toplevel=$(fetch "issues/$pr/comments" "top-level comments") || exit 1
 #     `originalLine` — same fallback the inline section already makes.
 #   * GraphQL reports a bot author WITHOUT the `[bot]` suffix that REST keeps
 #     (`claude` here, `claude[bot]` above). Never filter GraphQL on `claude[bot]`.
-nwo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) \
-  || die "cannot determine owner/repo for the GraphQL thread query."
+nwo=$(gh api "repos/{owner}/{repo}" --jq .full_name 2>/dev/null) \
+  || die "cannot determine owner/repo for the thread query."
 threads=$(gh api graphql \
   -f owner="${nwo%%/*}" -f name="${nwo##*/}" -F pr="$pr" \
   -f query='
@@ -144,10 +150,25 @@ query($owner:String!,$name:String!,$pr:Int!){
     }
   }
 }' --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>&1) || {
-  echo "pr-review-comments: failed to read review threads for PR #$pr." >&2
-  printf '%s\n' "$threads" | head -5 | sed 's/^/  /' >&2
-  echo "  Resolution state is GraphQL-only; without it 'what is still open' is unknown." >&2
-  exit 1
+  # The cloud route, normalised to the GraphQL shape above so nothing below
+  # branches on where the threads came from. Authors come from the inline
+  # comments already fetched, keyed by each thread's first comment id.
+  ccr=$(gh api "repos/{owner}/{repo}/pulls/$pr/ccr/review_threads" 2>&1) \
+    && printf '%s' "$ccr" | jq -e 'type == "array"' >/dev/null 2>&1 || {
+    echo "pr-review-comments: failed to read review threads for PR #$pr over GraphQL or the ccr route." >&2
+    printf '%s\n' "$threads" "$ccr" | head -8 | sed 's/^/  /' >&2
+    echo "  Without resolution state, 'what is still open' is unknown." >&2
+    exit 1
+  }
+  threads=$(jq -n --argjson t "$ccr" --argjson inline "$inline" '
+    ($inline | map({key: (.id | tostring), value: (.user.login // "?")}) | from_entries) as $who
+    | $t | map({
+        id: ("comment " + (.comment_ids[0] | tostring)),
+        isResolved: .resolved, isOutdated: .outdated, viewerCanResolve: true,
+        path, line, originalLine: null,
+        comments: {totalCount: (.comment_ids | length),
+                   nodes: [{author: {login: ($who[(.comment_ids[0] | tostring)] // "?")}}]}
+      })') || die "could not normalise the ccr review threads for PR #$pr."
 }
 
 count() { printf '%s' "$1" | jq 'length'; }
@@ -186,7 +207,7 @@ else
   echo "direction. Most open threads on a multi-round PR were already fixed by a"
   echo "later commit and simply never closed out, and 'anchor outdated' does NOT"
   echo "mean addressed — it only means the diff moved. Decide each one by reading the"
-  echo "file at the PR HEAD commit (gh pr view <pr> --json headRefOid), never from"
+  echo "file at the PR HEAD commit (gh api repos/{owner}/{repo}/pulls/<pr> --jq .head.sha), never from"
   echo "your working tree, which can be ahead of the PR and hide a live finding."
   echo "Procedure for working through these: skill://addressing-pr-feedback"
 fi
