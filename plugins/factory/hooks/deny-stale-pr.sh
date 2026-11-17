@@ -51,9 +51,9 @@
 #
 # Test it by piping a payload on stdin:
 #   printf '%s' '{"cwd":"/path/to/worktree","tool_input":{"command":"gh pr …"}}' \
-#     | .claude/hooks/deny-stale-pr.sh
+#     | ${CLAUDE_PLUGIN_ROOT}/hooks/deny-stale-pr.sh
 #   printf '%s' '{"cwd":"…","tool_name":"mcp__github__create_pull_request","tool_input":{"head":"x","base":"main"}}' \
-#     | .claude/hooks/deny-stale-pr.sh
+#     | ${CLAUDE_PLUGIN_ROOT}/hooks/deny-stale-pr.sh
 
 # The plugin can be enabled at user scope, so this hook fires in every project.
 # It acts only in a repository that has joined the factory.
@@ -298,7 +298,7 @@ case $base in
   main) ;;
   *) remedy="$remedy
 
-Note this checks the base you named, not main. Make sure origin/$base is itself merged up with main before you merge it down here, or you will do the same merge twice - see .claude/skills/implement-feature." ;;
+Note this checks the base you named, not main. Make sure origin/$base is itself merged up with main before you merge it down here, or you will do the same merge twice - see the factory:implement-feature skill." ;;
 esac
 
 deny "$remedy"

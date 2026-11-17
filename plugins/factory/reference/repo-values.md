@@ -39,8 +39,12 @@ gets the key.
 
 The CI scripts are the plugin's own, not the repo's:
 
-- `.claude/scripts/wait-ci.sh` is `${CLAUDE_PLUGIN_ROOT}/scripts/wait-ci.sh`
-- `.claude/scripts/pr-review-comments.sh` is `${CLAUDE_PLUGIN_ROOT}/scripts/pr-review-comments.sh`
+- `.claude/scripts/<name>.sh` is `${CLAUDE_PLUGIN_ROOT}/scripts/<name>.sh` for `pr-cycle`,
+  `gate-stamp`, `scope-judge`, `wait-ci`, `pr-review-comments`, `review-verdict` and
+  `head-checks-verdict`; every other script under `.claude/scripts/` is the repo's own
+- `.claude/hooks/<name>.sh` is `${CLAUDE_PLUGIN_ROOT}/hooks/<name>.sh` for `deny-stale-pr`,
+  `deny-ai-attribution`, `deny-unverified-ready` and `advise-ci-watch`
+- `.claude/skills/<name>/` is `${CLAUDE_PLUGIN_ROOT}/skills/<name>/` for the factory skills
 
 Run them from inside the repository: they find it from the current directory and refuse
 one without `FACTORY.md`.

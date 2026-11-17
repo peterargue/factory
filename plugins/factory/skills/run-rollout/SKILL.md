@@ -152,5 +152,6 @@ command.
 | "The rollout folder lets it through, so I can start a session there early" | The folder trusts your discipline. Only an approved plan starts a session there. |
 | "I'll do this coding fix in the rollout folder, it's quicker" | Never. Coding runs in the cloud or the user's normal checkout. |
 | "I'll ask for terraform now and the jobs later" | One ask per plan. Do the plan and the dry runs first so the list is complete. |
-| "I'll start `gcloud auth login` for them" | The guard refuses it. The user runs it. |
+| "I'll start `gcloud auth login` for them" | The guard refuses it. The user runs it. Check the login with `gcloud auth list`, never by printing a token. |
+| "This step is a one-off script, or needs `< file`" | The folder allows only the commands in its rules, run bare. Make it a wrapper call or a listed command. A script with no wrapper is not covered: say so in the plan, so the approval names it and the user knows it may prompt. |
 | "The plan has one extra step, it's harmless" | The user didn't approve it. Ask for it, once, with anything else new. |

@@ -257,7 +257,9 @@ Each sub-issue must state:
 - **The concrete handoff interface** it consumes or produces: real type and method
   signatures, not "an authenticated session".
 - **Acceptance criteria** — the contract. Tasks are the route and may be re-planned;
-  criteria may not change without surfacing.
+  criteria may not change without surfacing. A verifier that never saw the build checks
+  each one against the running app (`verify-acceptance`), so write each as something it
+  can observe: a role, a surface, and what it should see or be refused.
 - **How it will be invoked**: `implement-feature` delegates each sub-issue to `execute-issue`
   **in orchestrated mode, with PR base `feature/<name>`**. Name the mode and stop there —
   the mode defines the consequences (no PR of its own, no integration gate, the shared

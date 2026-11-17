@@ -5,13 +5,20 @@
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/deny-stale-pr.sh", "timeout": 10 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/deny-ai-attribution.sh", "timeout": 10 }
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/deny-ai-attribution.sh", "timeout": 10 },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/deny-unverified-ready.sh", "timeout": 300 }
         ]
       },
       {
         "matcher": "mcp__.*github.*__create_pull_request",
         "hooks": [
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/deny-stale-pr.sh", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "mcp__.*github.*__update_pull_request",
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/deny-unverified-ready.sh", "timeout": 300 }
         ]
       }
     ],

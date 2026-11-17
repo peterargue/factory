@@ -62,11 +62,30 @@ commands:
   teardown: none                 # what to run before removing a worktree
 
 ci:
+  cycle: factory:pr-cycle        # the plugin's scripts/pr-cycle.sh: gate, open draft, ship, merge
+  max_fix_rounds: 2              # CI failures per PR before asking; PR_CYCLE_MAX_FIX_ROUNDS
   wait: factory:wait-ci          # the plugin's scripts/wait-ci.sh <pr>
   review_comments: factory:pr-review-comments
   review_check: review / Claude review   # caller job / reusable job name
   review_workflow: .github/workflows/claude-review.yml   # the thin caller
+  ready_gate: factory:deny-unverified-ready   # refuses marking ready without a gate stamp and a judge pass
+  gate_stamp: factory:gate-stamp # runs commands.gate; stamps HEAD's tree on green
+  scope_judge: factory:scope-judge   # diff vs the PR and its spec: disabled tests, scope creep
+  judge_model: sonnet            # model for the judge's `claude -p` call
   advisory_checks: []            # run but not required; still real
+
+acceptance:                      # what the verify-acceptance verifier needs to run the app
+  criteria: "## Acceptance criteria"   # the issue-body section it reads, word for word
+  cwd: .
+  stack: none                    # bring up this checkout's own backing services and data
+  spa_build: []                  # builds needed before serve, if any
+  serve: <command>               # backgrounded; the app the criteria exercise
+  serve_bearer: none             # instead of serve, when a criterion needs a token
+  spa_dev: []
+  sign_in: none                  # where seeded sign-ins are documented
+  db_read: none                  # read-only database access
+  production: never              # the verifier never touches production
+  stop: none                     # what tears down serve or serve_bearer
 
 invariants: <path>#<heading>     # re-walk at every integration gate
 

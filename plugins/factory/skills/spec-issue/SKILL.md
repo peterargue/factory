@@ -137,6 +137,9 @@ Target package path, binary/command, reference file to mirror.
 ## Acceptance criteria
 - [ ] Concrete, checkable bullets an executing agent can verify against.
 - [ ] One per real requirement; testable, not vague.
+- [ ] Observable by someone who only runs the app: name the role, the surface (page,
+      endpoint, MCP tool, command, table) and what they should see or be refused.
+      `verify-acceptance` checks them word for word and marks vague ones BLOCKED.
 ```
 
 Wire **Depends on / find answers upstream** when the issue follows another: link the

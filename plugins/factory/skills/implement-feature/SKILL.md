@@ -43,13 +43,20 @@ Postgres means two delegates *could* now run it side by side without harming eac
 proves its own branch and never the union. Delegates run `make test` and `make lint`; the
 gate is `make ci-all`, in step 4 and step 7.
 
+**So is acceptance verification, for the same reason.** After each gate, `verify-acceptance`
+dispatches a fresh-context verifier that reads the Linear criteria word for word and drives
+the running app: per sub-issue in step 4, and for the parent plus every sub-issue on the
+merged branch in step 7. A delegate's own criteria check proves only what it meant to build.
+Run **one verifier at a time**, because a verifier may sign in and the browser session is the
+shared singleton.
+
 ## The delegate contract — a mode, not an override table
 
 `execute-issue` takes two optional inputs: a **PR base branch** and an **orchestrated
 mode**. Invoke it with base `feature/<name>` and orchestrated mode on, and it already
 behaves the way this skill needs — it opens no PR, skips the integration gate, leaves the
-shared change docs alone, and asks before starting a dev server or
-a browser check. Its "Inputs and modes" section lists those four carve-outs and closes with
+shared change docs alone, asks before starting a dev server or
+a browser check, and leaves acceptance verification to you. Its "Inputs and modes" section lists those five carve-outs and closes with
 "Nothing else changes"; its Guardrails add that **a mode's carve-outs are exhaustive**, so a
 delegate cannot read the mode as general licence to skip a checklist line.
 
@@ -143,18 +150,18 @@ nothing unless you go read it (step 4). Between them: the spec check confirms th
 record **exists**, never that a review happened or was any good — that stays the reviewing
 agent's responsibility.
 
-> **The hooks and scripts this skill leans on are checked in.** Three hooks under
-> `.claude/hooks/`, wired up by `.claude/settings.json` — `deny-stale-pr.sh` (fact 2),
-> `deny-ai-attribution.sh` and `advise-ci-watch.sh` (step 4) — plus three helpers under
-> `.claude/scripts/`: `wait-ci.sh` and `pr-review-comments.sh` (step 4) and
-> `check-change-docs.sh` (fact 4, also what CI runs). The hooks and the two PR scripts need
-> `jq` and `gh` on PATH; `check-change-docs.sh` needs neither, so it runs anywhere. The
+> **The hooks and scripts this skill leans on ship in the `factory` plugin.** Its hooks
+> under `${CLAUDE_PLUGIN_ROOT}/hooks/`: `deny-stale-pr.sh` (fact 2), `deny-ai-attribution.sh`,
+> `advise-ci-watch.sh` and `deny-unverified-ready.sh` (step 4); its helpers under
+> `${CLAUDE_PLUGIN_ROOT}/scripts/`: `pr-cycle.sh` and `pr-review-comments.sh` (step 4).
+> The change-docs check is the repo's own (`FACTORY.md` `specs.docs_check`; fact 4, also
+> what CI runs). The hooks and the PR scripts need `jq` and `gh` on PATH. The
 > hooks match on a bare substring, so a command that merely *mentions* `gh pr create` trips
 > the guard — including a `gh api` call that quotes it inside a comment body. Treat the
 > hooks as a backstop, not the mechanism.
 
 **Guards can fail open, and a guard that fails open is worse than no guard** (examples in
-`CLAUDE.md` → Traps). When you rely on a check, confirm you have seen it actually fail on a
+`.claude/rules/hooks.md`). When you rely on a check, confirm you have seen it actually fail on a
 case it should reject. A green signal you have never seen go red is not evidence.
 
 ## Step 0. Resume check
@@ -416,39 +423,44 @@ git fetch origin && git merge origin/main && git push
 #     concurrently-built issues surface here first.
 git merge origin/feature/<name>
 
-# (c) IN <worktree>/src — the gate. Post-merge; a pre-merge green is void.
-make ports                               # never assume a port (fact 3)
-make db-up && make ci-all                # ci-all, not ci — fact 4
+# (c) IN <worktree> — the gate, post-merge; a pre-merge green is void. pr-cycle runs
+#     FACTORY.md's gate (make ports, db-up, ci-all from src/ — facts 3 and 4) and
+#     stamps the tree, which `ready` requires.
+${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh gate
 
-# (d) IN <worktree> — push FIRST. The hook measures origin/<head>, and `gh pr create`
-#     pushes nothing on your behalf, so an unpushed merge is still stale.
-git push -u origin <issue gitBranchName>
-git rev-list --count origin/<issue gitBranchName>..origin/feature/<name>   # must be 0
-gh pr create --base feature/<name> --head <issue gitBranchName> --draft \
+# (c2) verify-acceptance for this issue's key, on <worktree> at its head. Brief the verifier
+#      only as that skill says — never with the delegate's report. A FAIL goes back to the
+#      delegate (SendMessage), then gate and verify again with a NEW verifier; two failing
+#      rounds stop for the user. The report goes in the sub-PR body.
+
+# (d) IN <worktree> — open. `open` refuses a branch behind its base, pushes, runs the
+#     stale-PR and attribution hooks itself, and opens a DRAFT. It prints the number.
+${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh open --base feature/<name> \
   --title "<what it does> (TAI-nn)" --body-file <path>
-gh pr ready <n>     # after the last push: this is what starts CI and the review
+
+# (e) IN <worktree>, after the last push — backgrounded (run_in_background: true).
+${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh ship <n>   # ready (needs the stamp), then wait for CI
 ```
 
-Open every PR as a draft and mark it ready only after its last push. CI and
-`Claude review` skip drafts and start on `ready_for_review`, so a push to a ready PR
-costs a full run. To fix findings, `gh pr ready --undo <n>`, push, then ready again.
+Drive every PR with `pr-cycle.sh`, not raw `gh pr` commands: it is REST-only, so it works
+in cloud sessions where `gh pr create/view/checks/ready` get GraphQL 403s. Its header
+lists the subcommands and exit codes.
 
-Watch CI with **one** backgrounded call to the helper — never a polling loop, never a
-scheduled wakeup:
+Every PR opens as a draft and is shipped once, after its last push. CI and `Claude review`
+skip drafts and start on `ready_for_review`, so a push to a ready PR costs a full run. To
+fix findings or a red check: `pr-cycle.sh unready <n>`, push, `gate`, `ship` again.
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/wait-ci.sh <n>
-```
+`ship` (and `wait`, its second half) is **one** backgrounded call — never a polling loop,
+never a scheduled wakeup. The harness wakes you when it exits, and **its exit code is the
+verdict**: `0` green (it then prints the review verdict), `1` red with a fix round left,
+`6` red for the third time, `3` status unknown, `4` timed out, `5` a refused precondition.
+It counts the commit's workflow runs as well as its checks, so the draft-time skips are
+never read as green in the seconds before the ready run registers.
 
-Run it via Bash with `run_in_background: true`. It blocks until the checks finish and the
-harness wakes you when it exits, and **its exit code is the verdict.** It uses
-`gh pr checks --watch` only to block — that command has been observed on this repo exiting
-**0** while the Go job was failing — and then reads the authoritative check list itself,
-exiting 0 only when it positively observed at least one check and every one of them passing.
-Non-zero says what to do: `1` a real failure, `2` a usage or environment problem, `3` a
-status it could not determine, `4` timed out with checks still pending. "No checks reported"
-is handled inside the script; it re-arms once rather than calling that a failure. A push
-re-arms the watch, and the `advise-ci-watch.sh` hook will remind you of this pattern.
+**CI fix rounds are capped at two per PR.** On `1`, root-cause the failure (section 5) and
+ship again. On `6`, stop working that PR and surface it to the user: the failing checks,
+the root cause you found, and what each round tried. A delegate's red sub-PR is the same:
+two fix rounds, then ask.
 
 **Then read the review before merging — a green check is not a read review.**
 `claude-review` comments *without* failing the check, and its findings arrive as **inline**
@@ -480,8 +492,12 @@ checked out in a live worktree, and would orphan it:
 
 ```bash
 git worktree remove .claude/worktrees/<issue-token>   # --force only for build artifacts
-gh pr merge <n> --merge --delete-branch
+${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh merge <n> --delete-branch   # add --dispositioned if it had findings
 ```
+
+`merge` refuses a draft, a head whose ruleset-required checks are not green, a head with no
+recorded review, and a review with findings unless you pass `--dispositioned`, which is your
+statement that every finding has its reply.
 
 Record **handoff outputs** on the issue (`save_comment`) if anything is `blockedBy` it —
 concrete interfaces, table and column names, the authz decision, gotchas. That's what the
@@ -512,7 +528,7 @@ checkout, on the freshly-merged feature branch (the hook measures *this* HEAD), 
 a body (`gh` requires one non-interactively):
 
 ```bash
-gh pr create --base main --head feature/<name> --draft \
+${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh open --base main \
   --title "<feature> (TAI-<parent>)" --body-file <path>
 ```
 
@@ -598,6 +614,12 @@ decision per new surface, no SKU assumed before registration, sales-ledger and
 inventory-snapshot separate, ingest idempotent, prices recomputed server-side, migrations
 append-only.
 
+**Then verify the merged feature with `verify-acceptance`**, passing the parent's key and
+every sub-issue's, on the integration checkout at the head you will mark ready. Green
+sub-PRs verified their slices against the feature branch as it was then; this checks the
+union against the whole contract. Its report goes in the umbrella PR body; criteria it marks
+BLOCKED (production) are what the dry runs below and the first real run must cover.
+
 **Run the feature against production on the merged branch** before the umbrella PR is
 marked ready: every production dry run `tasks.md` names, and the `--dry-run` of any new
 job, feed or importer it doesn't name. Delegates' runs proved their slices only. Read the
@@ -615,12 +637,14 @@ port, so a second dev-login on `localhost` evicts the first session.
 ## 8. Hand over
 
 Rewrite the umbrella PR body with consolidated assumptions (each with its implication) and
-decisions (chosen / rejected / why / what it commits us to), then `gh pr ready <n>`.
+decisions (chosen / rejected / why / what it commits us to) and the step 7 acceptance
+report, run `pr-cycle.sh gate` in the
+integration checkout, then `pr-cycle.sh ship <n>` (backgrounded).
 
 **Marking ready is what starts the umbrella PR's review.** `claude-review.yml` skips drafts
 and listens for `ready_for_review`, and so does CI, so both run on the merged feature only
-after `gh pr ready`. Push nothing after that unless you mean to pay for another run. Wait for the
-review with `${CLAUDE_PLUGIN_ROOT}/scripts/wait-ci.sh <n>`, then read it with
+after `ship` marks it ready. Push nothing after that unless you mean to pay for another run.
+`ship` waits for CI and the review; then read the review with
 `${CLAUDE_PLUGIN_ROOT}/scripts/pr-review-comments.sh <n>` before handing over; the umbrella PR is the one
 feature's last review before it deploys.
 
@@ -634,7 +658,7 @@ the review and dispositioned every finding (fixed, or answered with why not). Th
 review gate is the spec PR; merging to `main` deploys, and that deploy is pre-approved
 (see "Approvals" in `CLAUDE.md`). Hold the merge and hand over instead only when the user
 said they want to merge this feature themselves, or a finding needs their call. Merge with
-`gh pr merge <n> --merge`, never `--admin`. Then confirm the deploy is live by matching
+`pr-cycle.sh merge <n>` (a merge commit, never admin). Then confirm the deploy is live by matching
 the deploy run's image tag to the merge commit.
 
 **Then sync and archive:** `/opsx:sync` and `/opsx:archive` on a branch off the new
@@ -700,9 +724,12 @@ wait.
 | "The thread says fixed" | Look for the commit after the reviewed sha on the branch. Fixed with no commit is the worst reply a PR can carry. |
 | "I don't follow this finding, so I'll call it not needed" | That's a question. Ask it. |
 | "Linear says the dependency is done" | `git merge-base --is-ancestor` against the feature branch says whether it landed here. |
+| "The delegate checked every criterion, so acceptance is covered" | It checked what it meant to build. Run `verify-acceptance` with a verifier that never saw the build. |
+| "The verifier failed it, I'll ask the same verifier to look again" | It now remembers the last round. Fix, re-gate, and dispatch a new one. |
 | "All sub-PRs were green, so the feature is green" | The union was never verified. Run the integration gate. |
 | "I'll let each delegate run `/opsx:update`" | Concurrent edits conflict and drop `## Audit` entries. You own `design.md`, `proposal.md` and `## Audit` — its own task-group checkboxes are its business. |
 | "Each delegate can grab the next free migration number" | They'll grab the same one. Assign in preflight. |
+| "The ready gate refused, I'll `--accept` it and move on" | The judge read the diff against the issue. Split out the extra change or restore the test first; `--accept` is for a finding that is wrong, with the reason in the PR body. A gate refusal means no green `gate-stamp.sh` run on this exact tree. |
 | "Marked it ready, so I'm done" | Marking ready starts the Claude review. Wait for it and read it before handing over. |
 | "CI is green, I'll merge the umbrella PR" | Only after you've read the review and dispositioned every finding. Green doesn't mean the review found nothing. |
 | "The feature's done — I'll sync and archive" | Only after the umbrella PR merges. |

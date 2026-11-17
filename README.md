@@ -13,9 +13,9 @@ Everything runs as native Claude Code (CLI, cloud sessions, scheduled tasks and
 
 | Path | What |
 |---|---|
-| `plugins/factory/skills/` | `spec-feature`, `spec-issue`, `execute-issue`, `implement-feature`, `run-rollout`, `review-sessions`, invoked as `factory:<name>` |
-| `plugins/factory/hooks/` | `deny-stale-pr` (no PR from a head behind its base), `advise-ci-watch` (watch CI with `wait-ci.sh`, never a poll loop), `deny-ai-attribution` (on when `FACTORY.md` sets `ai_attribution: deny`). Each hook does nothing in a repo without `FACTORY.md` |
-| `plugins/factory/scripts/` | `wait-ci.sh` (exit code is the CI verdict), `pr-review-comments.sh` (all three review endpoints), and the two verdict helpers they call |
+| `plugins/factory/skills/` | `spec-feature`, `spec-issue`, `execute-issue`, `implement-feature`, `verify-acceptance`, `run-rollout`, `review-sessions`, invoked as `factory:<name>` |
+| `plugins/factory/hooks/` | `deny-stale-pr` (no PR from a head behind its base), `advise-ci-watch` (watch CI with `wait-ci.sh`, never a poll loop), `deny-ai-attribution` (on when `FACTORY.md` sets `ai_attribution: deny`), `deny-unverified-ready` (no PR marked ready without a green gate stamp on HEAD's tree and a scope-judge pass). Each hook does nothing in a repo without `FACTORY.md` |
+| `plugins/factory/scripts/` | `pr-cycle.sh` (gate, open draft, ship, merge; REST-only), `gate-stamp.sh` (runs `commands.gate`, stamps HEAD's tree on green), `scope-judge.sh` (diff vs the PR and its spec, via `claude -p`), `wait-ci.sh` (exit code is the CI verdict), `pr-review-comments.sh` (all three review endpoints), and the two verdict helpers |
 | `plugins/factory/templates/FACTORY.md` | The contract a new repo fills in |
 | `.github/workflows/claude-review.yml` | The reviewer, as a reusable workflow |
 | `tests/` | Fixture tests for the scripts and the review workflow's backstop, run by this repo's CI |
