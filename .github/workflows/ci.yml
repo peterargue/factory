@@ -33,5 +33,9 @@ jobs:
         run: tests/check-deny-unverified-ready.sh
       - name: pr-review-comments reads threads in cloud sessions
         run: tests/check-pr-review-comments.sh
+      - name: doctor passes an init-shaped repo and names each breakage
+        run: tests/check-doctor.sh
+      - name: The rendered standalone reviewer is valid and current
+        run: tests/check-render-review-workflow.sh
       - name: The reviewer evals test the shipped reviewer prompt
         run: tests/sync-reviewer-evals.sh --check
