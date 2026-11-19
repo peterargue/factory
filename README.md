@@ -18,6 +18,7 @@ Everything runs as native Claude Code (CLI, cloud sessions, scheduled tasks and
 | `plugins/factory/scripts/` | `pr-cycle.sh` (gate, open draft, ship, merge; REST-only), `gate-stamp.sh` (runs `commands.gate`, stamps HEAD's tree on green), `scope-judge.sh` (diff vs the PR and its spec, via `claude -p`), `wait-ci.sh` (exit code is the CI verdict), `pr-review-comments.sh` (all three review endpoints), and the two verdict helpers |
 | `plugins/factory/templates/FACTORY.md` | The contract a new repo fills in |
 | `.github/workflows/claude-review.yml` | The reviewer, as a reusable workflow |
+| `plugins/factory/evals/` | `claude plugin eval` suites for `execute-issue` and the reviewer, run locally after each model release (see its README) |
 | `tests/` | Fixture tests for the scripts and the review workflow's backstop, run by this repo's CI |
 
 ## Join a repo to the factory

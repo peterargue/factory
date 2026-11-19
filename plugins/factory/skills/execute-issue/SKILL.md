@@ -51,10 +51,12 @@ PR, names itself as the gate, or says "report ready and stop". Then, and only th
 1. **You open no PR.** No `gh pr create`, no `git push -u`, no push. Work the
    checklist in step 7, then report readiness to your caller and stop. The
    orchestrator gates the work and opens the PR against the base branch.
-2. **You do not run the integration gate** — no `make ci` / `make ci-all`. The
+2. **You do not run the integration gate** — `FACTORY.md`'s `commands.gate`, here
+   `make ci` / `make ci-all`, and not `pr-cycle.sh gate` either. The
    orchestrator runs it once against the merged result and owns that tick. Skip the
    line, say you skipped it, and report ready; a skipped gate is not a blocker to
-   surface to the user. `make test` and `make lint` are still yours.
+   surface to the user. `commands.delegate_safe` (here `make test` and `make lint`) is
+   still yours, and is what you run to check your work.
 3. **You do not write the shared change documents.** `design.md`, `proposal.md` and
    the append-only `## Audit` belong to the orchestrator — concurrent branches
    conflict, and merge-resolving an append-only section silently drops entries. No
@@ -109,16 +111,10 @@ insurance.
 
 ## The product invariants are hard constraints
 
-Read the **Invariants** and **Required flows** in `openspec/config.yaml` before you
-write code, and re-check them before you claim done. In short:
-
-- Money is fixed-point decimal (shopspring/decimal), **never `float64`** — 2 dp prices, 4 dp rates.
-- Access is role-based via `internal/authz`; every new surface needs an explicit role/atom decision.
-- SKUs don't exist until per-province registration mints them — upstream of registration, reference the product and call those fields "offer details".
-- Sales are an append-only event ledger; inventory is a snapshot. Never merged.
-- Ingest is idempotent — a re-run must never duplicate or silently overwrite.
-- Prices are versioned and **recomputed server-side on save**, rejected on mismatch.
-- Migrations are append-only, and they — not the docs — are the schema truth.
+Read the invariants and required flows that `FACTORY.md` points at (its `invariants`
+key; in `tsglobal-ca/platform`, `openspec/config.yaml`) before you write code, and
+re-check them before you claim done. They belong to the repo, not to this skill, so
+they are not repeated here.
 
 If the design or the tasks appear to require breaking one of these, that is a
 **stop-and-surface moment, not a judgment call.** Either the design is wrong or the
@@ -278,10 +274,7 @@ say so explicitly rather than skipping it silently.
 - [ ] **Migration numbering contiguous** — `migrations/embed_test.go` passes. If you
       added a migration off a base that has since moved, rename yours to the next
       free number; never renumber one already on main.
-- [ ] **Product invariants re-checked** (`openspec/config.yaml`): decimal money, an
-      explicit `internal/authz` decision for every new surface, no SKU assumed before
-      registration, sales-ledger and inventory-snapshot kept separate, ingest
-      idempotent, prices recomputed server-side, migrations append-only.
+- [ ] **Product invariants re-checked**, each one against the change.
 - [ ] **UI looked at, if the change renders anything** — dev server up, page open in
       a browser MCP, screenshot compared against that SPA's `CLAUDE.md` design brief.
       Source code doesn't reveal what the user sees. **Orchestrated mode: ask the

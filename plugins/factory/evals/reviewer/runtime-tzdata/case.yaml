@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: runtime-tzdata
+description: The change loads a time zone at startup in an alpine image with no tzdata. The diff looks fine; the defect is where it runs. Phase 2's "runtime image" question exists for exactly this.
+tags: [reviewer]
+context:
+  scaffold_script: fixture.sh
