@@ -33,3 +33,5 @@ jobs:
         run: tests/check-deny-unverified-ready.sh
       - name: pr-review-comments reads threads in cloud sessions
         run: tests/check-pr-review-comments.sh
+      - name: The scorecard counts what it says it counts
+        run: tests/check-scorecard.sh
