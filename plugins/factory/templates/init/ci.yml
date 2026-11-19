@@ -1,0 +1,38 @@
+# factory:init template. Placeholders in double braces are filled by the skill;
+# the toolchain steps are chosen from what the repo builds with.
+name: CI
+
+on:
+  pull_request:
+    # The factory opens sub-PRs into feature branches, so CI must run there too.
+    branches: [{{default_branch}}, "{{feature_prefix}}**"]
+    # ready_for_review is not a default type. Drafts run nothing (see `if:` below),
+    # so marking a PR ready is what runs CI.
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Main itself too: two separately-green PRs can still break it together.
+  push:
+    branches: [{{default_branch}}]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    # This name is the required check in the ruleset; rename both together.
+    name: Gate
+    # Agents push many times while a PR is a draft. GitHub refuses to merge a
+    # draft, so skipping there is safe and saves a run per push.
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      {{toolchain_steps}}
+      - name: Gate (FACTORY.md commands.gate)
+        working-directory: {{cwd}}
+        run: {{gate}}
