@@ -1,0 +1,22 @@
+# factory:init template, for a repo with the same GitHub owner as the factory.
+# Other owners get a rendered standalone copy instead (render-review-workflow.sh).
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    branches: [{{default_branch}}, "{{feature_prefix}}**"]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: claude-review-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    uses: peterargue/factory/.github/workflows/claude-review.yml@v{{version}}
+    secrets: inherit   # CLAUDE_CODE_OAUTH_TOKEN, from `claude setup-token`
