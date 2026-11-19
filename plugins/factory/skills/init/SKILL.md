@@ -97,6 +97,10 @@ Each from its template, every placeholder filled:
    `"<prefix>**"`, its `types` include `ready_for_review`, and its jobs skip drafts
    only if the review does too. The jobs that must pass become the ruleset's required
    checks.
+   Then copy `templates/factory-signal.yml` to `.github/workflows/factory-signal.yml`
+   and set its two workflow names (under `workflows:` and in `CI_WORKFLOW` /
+   `REVIEW_WORKFLOW`) to the CI and review workflows' `name:`s. It labels unattended PRs
+   for the PR tender; the README's "Set up the tender" step is the user's, in the web UI.
 5. **`CLAUDE.md` § Approvals.** If `CLAUDE.md` has no `## Approvals`, append
    `templates/init/approvals.md` filled from step 1 (create `CLAUDE.md` with a one-line
    title if it has none).

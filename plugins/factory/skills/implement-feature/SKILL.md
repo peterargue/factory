@@ -438,8 +438,10 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh gate
 ${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh open --base feature/<name> \
   --title "<what it does> (TAI-nn)" --body-file <path>
 
-# (e) IN <worktree>, after the last push — backgrounded (run_in_background: true).
-${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh ship <n>   # ready (needs the stamp), then wait for CI
+# (e) IN <worktree>, after the last push. Ready (needs the stamp), labelled attended,
+#     then subscribe to the PR's activity and end the turn; `status` on each event.
+${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh ship <n>
+${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh status <n>   # once per CI/review event
 ```
 
 Drive every PR with `pr-cycle.sh`, not raw `gh pr` commands: it is REST-only, so it works
@@ -450,12 +452,20 @@ Every PR opens as a draft and is shipped once, after its last push. CI and `Clau
 skip drafts and start on `ready_for_review`, so a push to a ready PR costs a full run. To
 fix findings or a red check: `pr-cycle.sh unready <n>`, push, `gate`, `ship` again.
 
-`ship` (and `wait`, its second half) is **one** backgrounded call — never a polling loop,
-never a scheduled wakeup. The harness wakes you when it exits, and **its exit code is the
-verdict**: `0` green (it then prints the review verdict), `1` red with a fix round left,
-`6` red for the third time, `3` status unknown, `4` timed out, `5` a refused precondition.
-It counts the commit's workflow runs as well as its checks, so the draft-time skips are
-never read as green in the seconds before the ready run registers.
+**CI is event-driven, never watched.** After `ship`, subscribe to the PR's activity
+(`subscribe_pr_activity`) and end the turn: never a polling loop, a `sleep`, or a
+scheduled wakeup. Each CI result and review wakes you; run `pr-cycle.sh status <n>` once
+per event, and **its exit code is the verdict**: `0` green (it then prints the review
+verdict), `1` red with a fix round left, `6` red for the third time, `7` not settled yet
+(end the turn again), `3` status unknown, `5` a refused precondition. It counts the
+commit's workflow runs as well as its checks, so the draft-time skips are never read as
+green in the seconds before the ready run registers. Only a local CLI session, which has
+no event channel, uses `ship <n> --wait` (backgrounded) instead.
+
+A sub-PR you will not see through (the session is ending, or you are handing over) gets
+`pr-cycle.sh handoff <n>`: it drops `factory:attended`, so the next red CI or review
+finding labels the PR and the GitHub-triggered tender (`factory:tend-pr`) takes one fix
+round. A PR left attended is left alone by everything automatic.
 
 **CI fix rounds are capped at two per PR.** On `1`, root-cause the failure (section 5) and
 ship again. On `6`, stop working that PR and surface it to the user: the failing checks,
@@ -556,7 +566,7 @@ Use `superpowers:receiving-code-review`: verify each comment technically before 
 no performative agreement, no blind implementation.
 
 - **Valid** → fix on the same issue branch, one focused commit carrying the issue key,
-  push, reply on the thread, let the re-armed watch confirm green.
+  push, reply on the thread, and let the next CI event confirm green.
 - **Wrong or a misread** → reply with reasoning and evidence; leave the code.
 - **Valid but out of scope** → acknowledge and file a follow-up rather than growing the PR.
 - **Would change an acceptance criterion** → scope change, not a review fix. Surface it.
@@ -639,12 +649,12 @@ port, so a second dev-login on `localhost` evicts the first session.
 Rewrite the umbrella PR body with consolidated assumptions (each with its implication) and
 decisions (chosen / rejected / why / what it commits us to) and the step 7 acceptance
 report, run `pr-cycle.sh gate` in the
-integration checkout, then `pr-cycle.sh ship <n>` (backgrounded).
+integration checkout, then `pr-cycle.sh ship <n>` and subscribe to its activity.
 
 **Marking ready is what starts the umbrella PR's review.** `claude-review.yml` skips drafts
 and listens for `ready_for_review`, and so does CI, so both run on the merged feature only
 after `ship` marks it ready. Push nothing after that unless you mean to pay for another run.
-`ship` waits for CI and the review; then read the review with
+Events bring CI and the review back (`pr-cycle.sh status <n>` on each); then read the review with
 `${CLAUDE_PLUGIN_ROOT}/scripts/pr-review-comments.sh <n>` before handing over; the umbrella PR is the one
 feature's last review before it deploys.
 

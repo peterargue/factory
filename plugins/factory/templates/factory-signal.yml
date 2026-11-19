@@ -1,0 +1,123 @@
+# .github/workflows/factory-signal.yml — copy into a factory repo and set the two
+# workflow names under `workflows:` to this repo's CI and review workflows.
+#
+# WHAT IT DOES. Turns "CI went red" and "the review found something" into a label
+# on the pull request. The label is what starts the factory's GitHub-triggered
+# scheduled task (`pull_request.labeled`, filtered to these labels), which runs the
+# plugin's `tend-pr` skill. Nobody polls: GitHub tells the workflow, the workflow
+# tells the task.
+#
+# WHY A LABEL. Scheduled-task GitHub triggers fire on pull request, issue and
+# release events only, not on check runs, workflow runs or review comments. A
+# label is a pull request event, carries no secret, and stays visible on the PR.
+#
+# WHAT IT LEAVES ALONE. A PR labelled factory:attended (a live session shipped it
+# and is subscribed to its events) or factory:needs-human (past its fix-round cap),
+# a draft, a closed PR, a PR from a fork, and a red result for a commit that is no
+# longer the PR's head.
+#
+# AUTH. GITHUB_TOKEN only. A label added with GITHUB_TOKEN starts no other
+# workflow, but GitHub still delivers the webhook to the Claude GitHub App, which
+# is what the scheduled task listens on. No Anthropic key, no PAT.
+#
+# The script between the two markers is fixture-tested by the factory repo's
+# tests/check-factory-signal.sh; keep the markers when you edit it.
+
+name: Factory signal
+
+on:
+  workflow_run:
+    workflows: [CI, Claude PR Review]   # this repo's CI and review workflow `name:`s
+    types: [completed]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: factory-signal-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  signal:
+    name: Label the PR for the tender
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Decide and label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
+          CI_WORKFLOW: CI                  # must match the first name under `workflows:`
+          REVIEW_WORKFLOW: Claude PR Review   # and the second
+        run: |
+          # --- factory-signal script start ---
+          set -uo pipefail
+          ev() { jq -r "$1" "$EVENT_PATH"; }
+          say() { echo "factory-signal: $*"; }
+
+          # label_pr <n> <sha> <label> — label PR n if it is still a candidate.
+          label_pr() {
+            local n=$1 sha=$2 label=$3 pr
+            pr=$(gh api "repos/$REPO/pulls/$n") || { say "cannot read PR #$n"; return 0; }
+            [ "$(jq -r .state <<<"$pr")" = open ]  || { say "#$n is not open"; return 0; }
+            [ "$(jq -r .draft <<<"$pr")" = false ] || { say "#$n is a draft"; return 0; }
+            [ "$(jq -r .head.repo.full_name <<<"$pr")" = "$REPO" ] || { say "#$n is from a fork"; return 0; }
+            [ "$(jq -r .head.sha <<<"$pr")" = "$sha" ] || { say "#$n has moved past ${sha:0:8}"; return 0; }
+            if jq -e '[.labels[].name] | any(. == "factory:attended" or . == "factory:needs-human")' <<<"$pr" >/dev/null; then
+              say "#$n is attended or needs a human; leaving it"; return 0
+            fi
+            gh api -X POST "repos/$REPO/issues/$n/labels" -f "labels[]=$label" >/dev/null \
+              && say "labelled #$n $label" || say "could not label #$n"
+          }
+
+          # prs_for <sha> — open PR numbers whose head is sha.
+          prs_for() {
+            local from_event
+            from_event=$(ev '[.workflow_run.pull_requests[]?.number] | .[]')
+            if [ -n "$from_event" ]; then echo "$from_event"; return; fi
+            gh api "repos/$REPO/commits/$1/pulls" --jq '.[] | select(.state == "open") | .number'
+          }
+
+          case $EVENT in
+            workflow_run)
+              name=$(ev .workflow_run.name); conclusion=$(ev .workflow_run.conclusion)
+              sha=$(ev .workflow_run.head_sha); event=$(ev .workflow_run.event)
+              [ "$event" = pull_request ] || { say "run was for a $event, not a PR"; exit 0; }
+              if [ "$name" = "$CI_WORKFLOW" ]; then
+                # cancelled is a superseded run (concurrency), not a red result.
+                case $conclusion in failure|timed_out) ;; *) say "CI $conclusion; nothing to do"; exit 0 ;; esac
+                for n in $(prs_for "$sha"); do label_pr "$n" "$sha" factory:ci-red; done
+              elif [ "$name" = "$REVIEW_WORKFLOW" ]; then
+                for n in $(prs_for "$sha"); do
+                  marker=$(gh api "repos/$REPO/issues/$n/comments?per_page=100" --paginate \
+                    --jq '.[].body | select(contains("<!-- claude-review v1"))' | grep -o '<!-- claude-review v1[^>]*' | tail -1)
+                  case $marker in
+                    *"outcome=findings"*"sha=$sha"*) label_pr "$n" "$sha" factory:review-findings ;;
+                    *) say "#$n: no findings recorded for ${sha:0:8}" ;;
+                  esac
+                done
+              else
+                say "workflow '$name' is not one this repo watches"
+              fi
+              ;;
+            pull_request_review)
+              state=$(ev .review.state); type=$(ev .review.user.type)
+              n=$(ev .pull_request.number); sha=$(ev .pull_request.head.sha)
+              # A person asking for changes. The bot's reviews arrive through the
+              # review workflow's marker above, so a Bot review is skipped here.
+              if [ "$state" = changes_requested ] && [ "$type" != Bot ]; then
+                label_pr "$n" "$sha" factory:review-findings
+              else
+                say "review $state by a $type; nothing to do"
+              fi
+              ;;
+          esac
+          exit 0
+          # --- factory-signal script end ---

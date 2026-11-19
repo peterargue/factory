@@ -186,7 +186,7 @@ check_path() {
   fi
 }
 for k in repo.instructions repo.product_context invariants approvals specs.docs_check \
-         ci.review_workflow deploy.on_merge_to_default acceptance.sign_in; do check_path "$k"; done
+         ci.review_workflow ci.signal_workflow deploy.on_merge_to_default acceptance.sign_in; do check_path "$k"; done
 for k in commands.cwd acceptance.cwd; do
   v=$(val "$k"); [ -z "$v" ] || [ -d "$top/$v" ] || say FAIL "path.$k" "$k is $v, which is not a directory"
 done

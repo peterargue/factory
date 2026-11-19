@@ -10,7 +10,10 @@
 #   - ready refuses with no gate stamp, and passes once `gate` is green
 #   - a failing gate writes no stamp
 #   - a re-run that passed supersedes the earlier failed run of the same check
-#   - wait exits 1, 1, then 6 on repeated failures, and green resets the count
+#   - wait/status exit 1, 1, then 6 on distinct repeated failures, a red result
+#     read twice counts once, and green resets the count
+#   - status never sleeps: not-settled is exit 7, not a wait
+#   - ship returns after marking ready and attended; ship --wait still blocks
 #   - merge refuses a spec PR, a missing required check, and unanswered findings
 #
 #   tests/check-pr-cycle.sh
@@ -129,10 +132,19 @@ runs '[{"id":1,"name":"Go","status":"completed","conclusion":"failure","html_url
        {"id":3,"name":"Claude review","status":"completed","conclusion":"success","html_url":"u"}]'
 review clean
 expect "a passing re-run supersedes the failed run" 0 "$(run wait 7)"
-runs '[{"id":4,"name":"Go","status":"completed","conclusion":"failure","html_url":"u"}]'
+fail_run() { runs "[{\"id\":$1,\"name\":\"Go\",\"status\":\"completed\",\"conclusion\":\"failure\",\"html_url\":\"run/$1\"}]"; }
+fail_run 4
 expect "first CI failure: fix round allowed" 1 "$(run wait 7)"
-expect "second CI failure: fix round allowed" 1 "$(run wait 7)"
+expect "the same red result read again is the same round" 1 "$(run status 7)"
+expect "...and again" 1 "$(run status 7)"
+fail_run 40
+: >"$fix/calls"
+expect "second CI failure: fix round allowed" 1 "$(run status 7)"
+grep -q "labels" "$fix/calls" && { echo "FAIL [no label before the cap]"; fails=$((fails + 1)); } || echo "ok   [no label before the cap]"
+fail_run 41
 expect "third CI failure: ask the user" 6 "$(run wait 7)"
+grep -q "POST repos/acme/widget/issues/7/labels" "$fix/calls" \
+  && echo "ok   [the cap labels the PR needs-human]" || { echo "FAIL [the cap labels the PR needs-human]"; fails=$((fails + 1)); }
 runs '[{"id":5,"name":"Go","status":"completed","conclusion":"success","html_url":"u"}]'
 expect "green resets the count" 0 "$(run wait 7)"
 runs '[{"id":6,"name":"Go","status":"completed","conclusion":"failure","html_url":"u"}]'
@@ -141,6 +153,36 @@ runs '[{"id":7,"name":"Go","status":"in_progress","conclusion":null,"html_url":"
 expect "pending past the deadline times out" 4 "$(PR_CYCLE_TIMEOUT=0 run wait 7)"
 runs '[]'
 expect "no checks at all is not green" 3 "$(run wait 7)"
+
+# --- status: one read per event, never a sleep -----------------------------------
+runs '[{"id":7,"name":"Go","status":"in_progress","conclusion":null,"html_url":"u"}]'
+expect "status while a check is pending says not yet" 7 "$(PR_CYCLE_INTERVAL=999 run status 7)"
+wfruns '[{"status":"completed","conclusion":"skipped"},{"status":"in_progress","conclusion":null}]'
+expect "status while a run is going says not yet" 7 "$(PR_CYCLE_INTERVAL=999 run status 7)"
+wfruns '[{"status":"completed","conclusion":"skipped"}]'
+expect "status before the ready run registers says not yet" 7 "$(PR_CYCLE_INTERVAL=999 run status 7)"
+wfruns '[{"status":"completed","conclusion":"skipped"},{"status":"completed","conclusion":"success"}]'
+runs '[{"id":10,"name":"Go","status":"completed","conclusion":"success","html_url":"u"}]'
+expect "status on green" 0 "$(run status 7)"
+pr_fixture true work
+expect "status refuses a draft" 5 "$(run status 7)"
+pr_fixture false work
+
+# --- ship hands off to events; handoff gives the PR to the tender ------------------
+pr_fixture true work
+: >"$fix/calls"
+expect "ship marks ready and returns at once" 0 "$(PR_CYCLE_INTERVAL=999 run ship 7)"
+grep -q "POST repos/acme/widget/issues/7/labels" "$fix/calls" \
+  && echo "ok   [ship marks the PR attended]" || { echo "FAIL [ship marks the PR attended]"; fails=$((fails + 1)); }
+grep -q "subscribe_pr_activity" "$work/out" \
+  && echo "ok   [ship says to subscribe and end the turn]" || { echo "FAIL [ship says to subscribe and end the turn]"; fails=$((fails + 1)); }
+pr_fixture false work   # the stub cannot flip draft; ready on a ready PR is a no-op
+expect "ship --wait still blocks to a verdict" 0 "$(run ship 7 --wait)"
+expect "ship refuses an unknown flag" 2 "$(run ship 7 --poll)"
+: >"$fix/calls"
+expect "handoff" 0 "$(run handoff 7)"
+grep -q "DELETE repos/acme/widget/issues/7/labels/factory%3Aattended" "$fix/calls" \
+  && echo "ok   [handoff removes the attended label]" || { echo "FAIL [handoff removes the attended label]"; fails=$((fails + 1)); }
 
 # --- merge ---------------------------------------------------------------------
 runs '[{"id":8,"name":"Go","status":"completed","conclusion":"success","html_url":"u"},
