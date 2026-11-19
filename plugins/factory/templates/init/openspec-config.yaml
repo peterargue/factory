@@ -1,0 +1,24 @@
+schema: spec-driven
+
+# Project context. Shown to AI when creating artifacts.
+# Scope: the essence of the product and the invariants a change must respect.
+# Not a feature list. Engineering conventions live in CLAUDE.md.
+context: |
+  ## What this is
+
+  {{one paragraph: what the product does and for whom}}
+
+  ## Who uses it
+
+  - **{{audience}}** ({{surface or path}}) — {{what they do here}}
+
+  ## Invariants
+
+  Rules a change must not break. FACTORY.md's `invariants` key points here, and the
+  orchestrator re-walks this list at every integration gate.
+
+  - **{{invariant}}.** {{why it holds}}
+
+  ## Required flows
+
+  - {{a flow every change in an area must keep, if any; else delete this section's bullets}}
