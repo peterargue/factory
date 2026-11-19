@@ -41,3 +41,5 @@ jobs:
         run: tests/check-render-review-workflow.sh
       - name: The reviewer evals test the shipped reviewer prompt
         run: tests/sync-reviewer-evals.sh --check
+      - name: The scorecard counts what it says it counts
+        run: tests/check-scorecard.sh

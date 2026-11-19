@@ -76,6 +76,45 @@ header if missing), so trends are visible across weeks:
 
 Count the same way every week; if you change a definition, note it under the table.
 
+### The scorecard
+
+The scorecard is the factory's weekly numbers on one dashboard: PRs merged, first-pass
+CI, review findings and rework pushes per PR, asks of Peter, usage-window hits, and the
+tokens and cache use of the project's thread sessions.
+`scorecard.sh` computes them; you only gather what it cannot reach and publish.
+
+1. **Save the threads.** For every thread with activity in the week (`list_threads`
+   with `since` = the week's Monday), save its `read_thread` result (all pages, oldest
+   first, merged into one `messages` list) as `<scratch>/threads/<thread_id>.json`. When
+   a page is too big to return and lands in a file, take the JSON line from that file.
+   Bodies may be cut to their first 300 characters, but keep `id`, `author`,
+   `created_at`, and status and activity bodies whole: decision cards are activities.
+2. **Add limit events.** If the project keeps a usage ledger with `rate_limit_event`
+   records, add one line per session that was refused for the window in the week to
+   any saved thread as `{"author":"agent","created_at":…,"body":"usage limit reached (ledger)"}`.
+3. **Save the sessions.** For each of those threads, take its session id (`cse_X` is
+   `session_X`) and save its `get_session` result as `<scratch>/sessions/<session_id>.json`.
+   For a session created before the week's Monday, append to the same file one
+   `list_events` page (kinds `result`, limit 100, paging back with `before_id`) that
+   holds a result from before Monday, so the week is not charged for the earlier
+   spend; if that is out of reach, the scorecard counts it whole and says so.
+4. **Run it** from the repo checkout, for the Monday-to-Monday UTC week that just ended:
+   `"${CLAUDE_PLUGIN_ROOT}"/scripts/scorecard.sh --since <Mon> --until <next Mon> --logs --threads <scratch>/threads --sessions <scratch>/sessions > <Mon>.json`.
+   Definitions are in `scorecard.sh --help`; never count by hand.
+5. **Store the week** at `/mnt/project-files/workflow/scorecard/<Mon>.json`, beside the
+   earlier weeks.
+6. **Publish.** Download the dashboard's current `weeks` and `prs` files (Artifact read
+   of each dataset's asset), then `scorecard-dataset.sh weeks <current weeks file>
+   <week files>` and the same with `prs`. Earlier weeks come from the current file, so
+   the history survives a run in a project that lacks the older week files; a week you
+   pass fresh replaces its old row. Upload each as an asset of the
+   scorecard dashboard (the scheduled task's prompt names it, or else `FACTORY.md`'s
+   People and channels section), point datasets `weeks` and `prs` at the new urls with a fresh
+   `updated`, then delete the old assets. Read the dashboard's `check` document after.
+7. In the message to Peter, give the week's six numbers against the previous week and
+   the baseline, then tokens (cost at list price and cache hit rate against the previous
+   week), in one line each, and the dashboard link.
+
 ## 4. Deliver
 
 1. Write the report to `/mnt/project-files/workflow/reviews/<YYYY-MM-DD>.md`: the
