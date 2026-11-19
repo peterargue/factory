@@ -96,8 +96,11 @@ CI, review findings and rework pushes per PR, asks of Peter, and usage-window hi
    Definitions are in `scorecard.sh --help`; never count by hand.
 4. **Store the week** at `/mnt/project-files/workflow/scorecard/<Mon>.json`, beside the
    earlier weeks.
-5. **Publish.** `scorecard-dataset.sh weeks <all week files>` and `scorecard-dataset.sh
-   prs <all week files>` make the two dashboard files. Upload each as an asset of the
+5. **Publish.** Download the dashboard's current `weeks` and `prs` files (Artifact read
+   of each dataset's asset), then `scorecard-dataset.sh weeks <current weeks file>
+   <week files>` and the same with `prs`. Earlier weeks come from the current file, so
+   the history survives a run in a project that lacks the older week files; a week you
+   pass fresh replaces its old row. Upload each as an asset of the
    scorecard dashboard (the scheduled task's prompt names it, or else `FACTORY.md`'s
    People and channels section), point datasets `weeks` and `prs` at the new urls with a fresh
    `updated`, then delete the old assets. Read the dashboard's `check` document after.
