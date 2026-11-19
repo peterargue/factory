@@ -32,7 +32,12 @@ jq -s --arg mode "$mode" '
         prs_with_rework: $m.rework_pushes.prs_with_rework,
         asks: $m.asks_of_owner.asks, ask_median_wait_hours: $m.asks_of_owner.median_wait_hours,
         threads_read: $m.asks_of_owner.threads_read,
-        usage_hits: $m.usage_window_hits.total })) | sort_by(.week)),
+        usage_hits: $m.usage_window_hits.total,
+        sessions: $m.tokens.sessions, sessions_started_before: $m.tokens.sessions_started_before,
+        tokens_input: $m.tokens.input, tokens_output: $m.tokens.output,
+        tokens_cache_read: $m.tokens.cache_read, tokens_cache_write: $m.tokens.cache_write,
+        cache_hit_rate: $m.tokens.cache_hit_rate, cost_usd_list: $m.tokens.cost_usd_list,
+        peak_window_utilization: $m.tokens.peak_window_utilization })) | sort_by(.week)),
       meta: [{label: "Made by", value: "peterargue/factory plugins/factory/scripts/scorecard.sh, one run per week"},
              {label: "Definitions", value: "scorecard.sh --help"}] }
   else

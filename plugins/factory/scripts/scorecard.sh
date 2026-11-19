@@ -2,7 +2,7 @@
 # The factory scorecard: one week of numbers that say whether the factory is getting
 # better. review-sessions runs it every Monday and publishes the result.
 #
-#   scorecard.sh [--since ISO] [--until ISO] [--threads DIR] [--logs]
+#   scorecard.sh [--since ISO] [--until ISO] [--threads DIR] [--sessions DIR] [--logs]
 #
 # Prints one JSON object: the week, a `metrics` block and a `prs` list with each
 # merged PR's own numbers, so any figure can be traced to the PRs behind it.
@@ -29,11 +29,26 @@
 #   usage_window_hits Subscription usage-limit hits: thread messages that report one
 #                     (--threads), plus failed review runs whose log reports one (--logs,
 #                     which downloads each failed review job's log). null when neither
-#                     source was read.
+#                     source was read. With --sessions, also every rate-limit event
+#                     whose status was not `allowed`.
+#   tokens            From --sessions only: tokens the sessions used in the window,
+#                     summed over every model (input, output, cache reads, cache
+#                     writes), the cache hit rate (cache reads over all input-side
+#                     tokens), list-price cost, the peak weekly-window utilization any
+#                     rate-limit event reported, and the same token counts by model.
+#                     null without --sessions.
 #
 # --threads DIR holds one JSON file per project thread, each the `read_thread` result
 # for that thread ({"thread_id", "messages": [{author, created_at, body}...]}). Only
 # a Claude session can read threads, so the caller saves them; this script only counts.
+#
+# --sessions DIR holds one file per session, any of these appended as returned (text
+# around the JSON is ignored): `get_session` (the session's running totals, not split
+# by model), and `list_events` pages of kinds result and rate_limit_event (each result
+# holds running totals by model). The window's use is the last total inside it minus
+# the last one before it. A session created before --since with no earlier total saved
+# counts whole, and `tokens.sessions_started_before` says how many did: save a
+# list_events page from before --since for those, or accept the overcount.
 #
 # The repo is the caller's: FACTORY.md's repo.github, found from the git toplevel.
 # Tunables: SCORECARD_REVIEWER (claude[bot]), SCORECARD_GH (gh binary; tests only).
@@ -51,12 +66,13 @@ usage_re='usage limit reached|hit your (usage )?limit|limit will reset at|rate_l
 
 die() { local code=$1; shift; echo "scorecard: $*" >&2; exit "$code"; }
 
-since="" until="" threads="" logs=0
+since="" until="" threads="" sessions="" logs=0
 while [ $# -gt 0 ]; do
   case $1 in
     --since) since=${2-}; shift 2 ;;
     --until) until=${2-}; shift 2 ;;
     --threads) threads=${2-}; shift 2 ;;
+    --sessions) sessions=${2-}; shift 2 ;;
     --logs) logs=1; shift ;;
     -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die 2 "unknown argument '$1' (see --help)" ;;
@@ -75,6 +91,7 @@ default_branch=$(factory_value default_branch)
 review_workflow=$(factory_value review_workflow)
 [ -n "$repo" ] || die 2 "FACTORY.md has no repo.github."
 [ -z "$threads" ] || [ -d "$threads" ] || die 2 "--threads '$threads' is not a directory."
+[ -z "$sessions" ] || [ -d "$sessions" ] || die 2 "--sessions '$sessions' is not a directory."
 
 iso_ok() { date -u -d "$1" +%s >/dev/null 2>&1; }
 [ -n "$until" ] || until=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -161,6 +178,60 @@ if [ "$logs" = 1 ] && [ -n "$review_workflow" ]; then
   done
 fi
 
+# Tokens, cache use and limit events from saved session records, one file per session.
+# Only lines that are JSON are read, so a saved tool result with text around it parses.
+session_stats=null
+if [ -n "$sessions" ]; then
+  session_stats=$(find "$sessions" -maxdepth 1 -type f | sort | while IFS= read -r f; do
+      grep -h '^[[:space:]]*[{[]' "$f" | jq -c --arg f "$f" '{f: $f, d: .}'
+    done | jq -s --arg s "$since" --arg u "$until" '
+      def f($m): {input: ($m.inputTokens // 0), output: ($m.outputTokens // 0),
+                  cache_read: ($m.cacheReadInputTokens // 0), cache_write: ($m.cacheCreationInputTokens // 0),
+                  cost: ($m.costUSD // 0)};
+      def recs: .f as $f | .d | (.ccr // .) as $c
+        | if ($c | type) == "object" and ($c.external_metadata.usage? != null) then
+            # get_session: the whole session'"'"'s totals, as of updated_at, not split by model
+            {f: $f, t: $c.updated_at, created: $c.created_at,
+             mu: {"all models": ($c.external_metadata.usage | {inputTokens: .input_tokens, outputTokens: .output_tokens,
+                   cacheReadInputTokens: .cache_read_tokens, cacheCreationInputTokens: .cache_write_tokens, costUSD: .cost_usd})}}
+          else ((.ccr.data // .data // .) | if type == "array" then .[] else empty end
+            | .created_at as $t | .result // empty | (.internal_anthropic_catchall // .)
+            | select(.modelUsage != null) | {f: $f, t: $t, mu: .modelUsage}) end;
+      [ .[] | (.d.ccr.data // .d.data // .d) | if type == "array" then .[] else empty end
+        | select(.created_at >= $s and .created_at < $u) ] as $ev
+      | [ .[] | recs ] as $recs
+      | ([ $ev[] | .rate_limit_event // empty | (.internal_anthropic_catchall // .) as $r
+           | {id: (.uuid // $r.uuid // ""), i: $r.rate_limit_info} ] | unique_by(.id) | map(.i)) as $rl
+      # Each record holds the session'"'"'s running totals. The window'"'"'s use is the last
+      # total inside it minus the last total before it (zero if none was saved).
+      | [ $recs | group_by(.f)[] | sort_by(.t)
+          | (if any(.[]; .created != null) then map(.mu |= {"all models": ([.[]] | {
+                inputTokens: (map(.inputTokens // 0) | add), outputTokens: (map(.outputTokens // 0) | add),
+                cacheReadInputTokens: (map(.cacheReadInputTokens // 0) | add),
+                cacheCreationInputTokens: (map(.cacheCreationInputTokens // 0) | add),
+                costUSD: (map(.costUSD // 0) | add)})}) else . end)
+          | ([.[] | .created // empty] | first) as $created
+          | (map(select(.t >= $s and .t < $u)) | last) as $end
+          | select($end != null)
+          | ((map(select(.t < $s)) | last) // null) as $start
+          | {f: $end.f, unsplit: ($start == null and $created != null and $created < $s),
+             rows: [ $end.mu | to_entries[] | .key as $k | f(.value) as $e | f(($start.mu // {})[$k] // {}) as $b
+                     | {model: $k} + ($e | with_entries(.value = ([.value - $b[.key], 0] | max))) ]} ] as $per
+      | [ $per[] | .rows[] ] as $u
+      | def tot: { input: (map(.input) | add // 0), output: (map(.output) | add // 0),
+                   cache_read: (map(.cache_read) | add // 0), cache_write: (map(.cache_write) | add // 0),
+                   cost_usd_list: (map(.cost) | add // 0 | . * 100 | round / 100) };
+      ($u | tot) as $t
+      | { sessions: ($per | length),
+          tokens: ($t + {
+            cache_hit_rate: (($t.input + $t.cache_read + $t.cache_write) as $all
+                             | if $all == 0 then null else ($t.cache_read / $all * 1000 | round / 1000) end),
+            peak_window_utilization: ([$rl[] | .unifiedWindows // {} | .[] | .utilization // empty] | max),
+            sessions_started_before: ([$per[] | select(.unsplit)] | length),
+            by_model: ($u | group_by(.model) | map({key: .[0].model, value: tot}) | from_entries) }),
+          limit_hits: ([$rl[] | select((.status // "allowed") != "allowed")] | length) }')
+fi
+
 # Asks and usage hits from saved project threads.
 thread_stats=null
 if [ -n "$threads" ]; then
@@ -207,7 +278,7 @@ if [ -n "$threads" ]; then
 fi
 
 jq --arg repo "$repo" --arg s "$since" --arg u "$until" --arg db "$default_branch" \
-   --argjson t "$thread_stats" --argjson rh "$review_hits" '
+   --argjson t "$thread_stats" --argjson rh "$review_hits" --argjson ss "$session_stats" '
   . as $prs
   | ($prs | map(select(.first_pass != null))) as $ran
   | ($prs | map(select(.rework_pushes != null))) as $rw
@@ -226,8 +297,11 @@ jq --arg repo "$repo" --arg s "$since" --arg u "$until" --arg db "$default_branc
                        per_pr: ratio($rw | map(.rework_pushes) | add // 0; $rw | length),
                        prs_with_rework: ($rw | map(select(.rework_pushes > 0)) | length) },
       asks_of_owner: (if $t == null or $t.threads == 0 then null else { asks: $t.asks, median_wait_hours: $t.ask_wait_hours, threads_read: $t.threads } end),
-      usage_window_hits: (if $t == null and $rh == null then null
-                          else { total: (($t.usage_hits // 0) + ($rh // 0)),
-                                 threads: ($t.usage_hits // null), review_runs: $rh } end)
+      usage_window_hits: (if $t == null and $rh == null and $ss == null then null
+                          else { total: (($t.usage_hits // 0) + ($rh // 0) + ($ss.limit_hits // 0)),
+                                 threads: ($t.usage_hits // null), review_runs: $rh,
+                                 sessions: ($ss.limit_hits // null) } end),
+      tokens: (if $ss == null or $ss.sessions == 0 then null
+               else $ss.tokens + {sessions: $ss.sessions} end)
     },
     prs: $prs }' <<<"$prs"

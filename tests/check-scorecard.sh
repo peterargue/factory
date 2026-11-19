@@ -84,8 +84,33 @@ cat > "$tmp/threads/t1.json" <<'EOF'
  {"id":"m10","author":"user","created_at":"2026-11-25T11:00:00Z","body":"ok"}]}
 EOF
 
+# Saved sessions, one file each. Every record holds the session's running totals, so a
+# session's week is its last total in the window minus its last before it:
+#   s1  list_events pages: r2 minus r0; a later total (r9) and a repeated result change
+#       nothing; text around the JSON is ignored; one refused rate-limit event.
+#   s2  started in the window: r3 counts whole.
+#   s3  get_session only, created before the window: counts whole, and is flagged.
+#   s4  get_session minus an earlier per-model result, compared over all models.
+mkdir "$tmp/sessions"
+cat > "$tmp/sessions/s1.txt" <<'EOF'
+Another session's record (JSON):
+    {"ccr":{"data":[{"created_at":"2026-11-13T10:00:00Z","result":{"uuid":"r1","internal_anthropic_catchall":{"session_id":"s1","modelUsage":{"claude-opus-5-5":{"inputTokens":150,"outputTokens":70,"cacheReadInputTokens":1200,"cacheCreationInputTokens":150,"costUSD":1.75}}}}}, {"created_at":"2026-11-13T11:00:00Z","result":{"uuid":"r2","internal_anthropic_catchall":{"session_id":"s1","modelUsage":{"claude-opus-5-5":{"inputTokens":150,"outputTokens":80,"cacheReadInputTokens":1300,"cacheCreationInputTokens":150,"costUSD":1.8},"claude-haiku-5-5":{"inputTokens":100,"outputTokens":5,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.01}}}}}, {"created_at":"2026-11-13T12:00:00Z","rate_limit_event":{"uuid":"l1","internal_anthropic_catchall":{"rate_limit_info":{"status":"allowed","unifiedWindows":{"seven_day":{"utilization":0.4}}}}}}, {"created_at":"2026-11-14T12:00:00Z","rate_limit_event":{"uuid":"l2","internal_anthropic_catchall":{"rate_limit_info":{"status":"rejected","unifiedWindows":{"seven_day":{"utilization":0.95}}}}}}, {"created_at":"2026-11-25T11:00:00Z","result":{"uuid":"r9","internal_anthropic_catchall":{"session_id":"s1","modelUsage":{"claude-opus-5-5":{"inputTokens":9999,"outputTokens":9999,"cacheReadInputTokens":9999,"cacheCreationInputTokens":9999,"costUSD":99},"claude-haiku-5-5":{"inputTokens":100,"outputTokens":5,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.01}}}}}]}}
+end of record
+{"ccr":{"data":[{"created_at":"2026-11-11T09:00:00Z","result":{"uuid":"r0","internal_anthropic_catchall":{"session_id":"s1","modelUsage":{"claude-opus-5-5":{"inputTokens":50,"outputTokens":20,"cacheReadInputTokens":400,"cacheCreationInputTokens":50,"costUSD":0.5}}}}}, {"created_at":"2026-11-13T10:00:00Z","result":{"uuid":"r1","internal_anthropic_catchall":{"session_id":"s1","modelUsage":{"claude-opus-5-5":{"inputTokens":150,"outputTokens":70,"cacheReadInputTokens":1200,"cacheCreationInputTokens":150,"costUSD":1.75}}}}}]}}
+EOF
+cat > "$tmp/sessions/s2.json" <<'EOF'
+{"ccr":{"data":[{"created_at":"2026-11-15T10:00:00Z","result":{"uuid":"r3","internal_anthropic_catchall":{"session_id":"s2","modelUsage":{"claude-opus-5-5":{"inputTokens":0,"outputTokens":40,"cacheReadInputTokens":100,"cacheCreationInputTokens":0,"costUSD":0.1}}}}}]}}
+EOF
+cat > "$tmp/sessions/s3.json" <<'EOF'
+{"ccr":{"id":"session_s3","created_at":"2026-11-10T08:00:00Z","updated_at":"2026-11-14T08:00:00Z","external_metadata":{"usage":{"input_tokens":10,"output_tokens":20,"cache_read_tokens":300,"cache_write_tokens":30,"cost_usd":0.2}}}}
+EOF
+cat > "$tmp/sessions/s4.txt" <<'EOF'
+{"ccr":{"data":[{"created_at":"2026-11-10T09:00:00Z","result":{"uuid":"r4","internal_anthropic_catchall":{"session_id":"u4","modelUsage":{"claude-opus-5-5":{"inputTokens":5,"outputTokens":5,"cacheReadInputTokens":50,"cacheCreationInputTokens":5,"costUSD":0.05},"claude-haiku-5-5":{"inputTokens":5,"outputTokens":0,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.01}}}}}]}}
+{"ccr":{"id":"session_s4","created_at":"2026-11-09T08:00:00Z","updated_at":"2026-11-15T08:00:00Z","external_metadata":{"usage":{"input_tokens":20,"output_tokens":15,"cache_read_tokens":150,"cache_write_tokens":10,"cost_usd":0.16}}}}
+EOF
+
 (cd "$tmp/repo" && SCORECARD_GH="$tmp/gh" "$script" --since 2026-11-12T00:00:00Z --until 2026-11-19T00:00:00Z \
-   --logs --threads "$tmp/threads") > "$tmp/out.json"
+   --logs --threads "$tmp/threads" --sessions "$tmp/sessions") > "$tmp/out.json"
 check "window"                '[.since,.until]'                           '["2026-11-12T00:00:00Z","2026-11-19T00:00:00Z"]'
 check "merged in window only" '[.prs[].number] | sort'                    '[1,2]'
 check "into default branch"   '.metrics.into_default'                     '1'
@@ -94,12 +119,27 @@ check "a rerun is not a pass" '.prs[] | select(.number==2) | .failed_first' '["C
 check "review findings"       '.metrics.review_findings'                  '{"total":2,"per_pr":1,"prs_with_findings":1}'
 check "rework pushes"         '.metrics.rework_pushes'                    '{"total":1,"per_pr":0.5,"prs_with_rework":1}'
 check "asks of the owner"     '.metrics.asks_of_owner'                    '{"asks":2,"median_wait_hours":4,"threads_read":1}'
-check "usage-window hits"     '.metrics.usage_window_hits'                '{"total":2,"threads":1,"review_runs":1}'
+check "usage-window hits"     '.metrics.usage_window_hits'                '{"total":3,"threads":1,"review_runs":1,"sessions":1}'
+check "tokens in the window"  '.metrics.tokens | [.sessions,.input,.output,.cache_read,.cache_write,.cost_usd_list]' '[4,220,135,1400,135,1.71]'
+check "cache hit rate"        '.metrics.tokens.cache_hit_rate'            '0.798'
+check "peak window use"       '.metrics.tokens.peak_window_utilization'   '0.95'
+check "tokens by model"       '.metrics.tokens.by_model | keys'           '["all models","claude-haiku-5-5","claude-opus-5-5"]'
+check "started before, whole" '.metrics.tokens.sessions_started_before'   '1'
+
+# The dashboard's weekly rows carry the token numbers, and an older dataset file keeps
+# the weeks no fresh run covers while a fresh run replaces its own week.
+dataset=$(dirname "$script")/scorecard-dataset.sh
+cp "$tmp/out.json" "$tmp/week.json"
+echo '{"rows":[{"week":"2026-11-05","prs_merged":7},{"week":"2026-11-12","prs_merged":99}]}' > "$tmp/old.json"
+"$dataset" weeks "$tmp/old.json" "$tmp/week.json" > "$tmp/out.json"
+check "dataset keeps old weeks" '[.rows[] | [.week, .prs_merged]]'       '[["2026-11-05",7],["2026-11-12",2]]'
+check "dataset tokens"        '.rows[1] | [.sessions,.tokens_cache_read,.cache_hit_rate,.cost_usd_list]' '[4,1400,0.798,1.71]'
 
 # Without --threads or --logs those two are unknown, not zero.
 (cd "$tmp/repo" && SCORECARD_GH="$tmp/gh" "$script" --since 2026-11-12T00:00:00Z --until 2026-11-19T00:00:00Z) > "$tmp/out.json"
 check "asks unknown"          '.metrics.asks_of_owner'                    'null'
 check "usage unknown"         '.metrics.usage_window_hits'                'null'
+check "tokens unknown"        '.metrics.tokens'                           'null'
 
 rc=0; (cd "$tmp" && SCORECARD_GH="$tmp/gh" "$script" >/dev/null 2>&1) || rc=$?
 if [ "$rc" = 2 ]; then echo "ok   [no FACTORY.md] exit 2"; else echo "FAIL [no FACTORY.md] exit $rc, want 2"; fail=1; fi
