@@ -7,8 +7,11 @@
 #   pr-cycle.sh gate                                   run FACTORY.md's gate, stamp HEAD on green
 #   pr-cycle.sh open  [--base B] --title T --body-file F   push, open a DRAFT PR, print its number
 #   pr-cycle.sh ready <n>                              mark ready (needs a gate stamp for HEAD)
-#   pr-cycle.sh wait  <n>                              block until CI settles; exit code is the verdict
-#   pr-cycle.sh ship  <n>                              ready, then wait (run it backgrounded)
+#   pr-cycle.sh ship  <n>                              ready, mark attended, then hand off to events
+#   pr-cycle.sh status <n>                             one read of CI, on each event; exit code is the verdict
+#   pr-cycle.sh ship  <n> --wait                       ready, then wait (no event channel; backgrounded)
+#   pr-cycle.sh wait  <n>                              block until CI settles (polls; local CLI only)
+#   pr-cycle.sh handoff <n>                            stop attending; the GitHub-triggered tender takes over
 #   pr-cycle.sh unready <n>                            back to draft, to push fixes
 #   pr-cycle.sh merge <n> [--dispositioned] [--delete-branch]
 #                                                      merge once required checks are green and reviewed
@@ -31,10 +34,18 @@
 # script: `gate` calls `gate-stamp.sh --record` after a green run and `ready` calls
 # `gate-stamp.sh --check`. If it is missing, both refuse. No stamp, no ready.
 #
-# FIX ROUNDS. `wait` counts CI failures per PR in `<git-dir>/factory/pr-<n>-ci-fails`
-# and resets on green. Up to PR_CYCLE_MAX_FIX_ROUNDS (default 2) failures exit 1:
-# root-cause, fix, `unready`, push, `ship` again. The next failure exits 6: stop and
-# ask the user, with what failed and what was tried.
+# EVENTS, NOT POLLING. A cloud session or project thread ships, subscribes to the
+# PR's activity and ends its turn; each CI or review event wakes it, and it runs
+# `status` once. Nothing sleeps. A PR nobody is attending is picked up by the
+# GitHub-triggered scheduled task (skills/tend-pr) when the repo's signal workflow
+# labels it. `wait` remains only for a local session with no event channel.
+#
+# FIX ROUNDS. `status` and `wait` record each distinct red result per PR in
+# `<git-dir>/factory/pr-<n>-ci-fails` and reset on green. Up to
+# PR_CYCLE_MAX_FIX_ROUNDS (default FACTORY.md ci.max_fix_rounds, else 2) failures
+# exit 1: root-cause, fix, `unready`, push, `ship` again. The next failure exits 6
+# and labels the PR factory:needs-human: stop and ask the user, with what failed and
+# what was tried.
 #
 # Exit codes (every subcommand):
 #   0  done / green
@@ -45,8 +56,9 @@
 #   5  refused: a precondition failed (no gate stamp, dirty tree, behind base,
 #      unreviewed, spec PR, hook deny) — the message says what to do
 #   6  CI failed and the fix-round cap is reached: ask the user
+#   7  status only: CI has not settled yet; end the turn and wait for the next event
 #
-# Tunables: PR_CYCLE_INTERVAL (poll seconds, 30), PR_CYCLE_TIMEOUT (seconds, 2700),
+# Tunables: PR_CYCLE_INTERVAL (wait's poll seconds, 30), PR_CYCLE_TIMEOUT (seconds, 2700),
 # PR_CYCLE_MAX_FIX_ROUNDS (2). PR_CYCLE_GH overrides the gh binary (tests only).
 
 set -uo pipefail
@@ -85,6 +97,9 @@ repo_slug=$(factory_value github)
 default_branch=$(factory_value default_branch)
 spec_prefix=$(factory_value spec_branch | sed 's/<.*//')
 [ -n "$repo_slug" ] && [ -n "$default_branch" ] || die 2 "FACTORY.md has no repo.github or repo.default_branch."
+max_rounds=${PR_CYCLE_MAX_FIX_ROUNDS:-$(factory_value max_fix_rounds)}
+max_rounds=${max_rounds:-2}
+case $max_rounds in ''|*[!0-9]*) die 2 "PR_CYCLE_MAX_FIX_ROUNDS (or FACTORY.md ci.max_fix_rounds) must be a whole number." ;; esac
 
 api() { "$gh_bin" api "$@"; }
 
@@ -107,6 +122,24 @@ stamp_record() { [ -x "$stamp_tool" ] || die 2 "$stamp_tool is missing; the plug
 stamp_check() { [ -x "$stamp_tool" ] || die 2 "$stamp_tool is missing; the plugin is incomplete."; "$stamp_tool" --check --dir "$root"; }
 
 tree_clean() { [ -z "$(git -C "$root" status --porcelain 2>/dev/null)" ]; }
+
+# --- labels ----------------------------------------------------------------
+# The PR's labels are the factory's only shared state between a session and the
+# GitHub-triggered tender: a session that ships a PR marks it attended, so the
+# signal workflow (templates/factory-signal.yml) leaves it alone; a PR past its
+# fix-round cap is marked needs-human, so nothing automatic touches it again.
+# Labels are best effort: a failure is reported and never changes a verdict.
+label_attended='factory:attended'
+label_needs_human='factory:needs-human'
+label_enc() { printf '%s' "$1" | sed 's/:/%3A/g'; }
+label_add() { # <n> <label>
+  api -X POST "repos/$repo_slug/issues/$1/labels" -f "labels[]=$2" >/dev/null 2>&1 \
+    || say "WARNING: could not add label $2 to PR #$1; add it by hand."
+}
+label_rm() { # <n> <label>
+  api -X DELETE "repos/$repo_slug/issues/$1/labels/$(label_enc "$2")" >/dev/null 2>&1 \
+    || say "note: PR #$1 had no $2 label to remove."
+}
 
 # --- check classification -------------------------------------------------
 # Both filters take the raw REST payloads and are the only place buckets are
@@ -264,63 +297,132 @@ cmd_unready() {
   set_draft "$n" draft
 }
 
-cmd_wait() {
-  local n=$1 interval=${PR_CYCLE_INTERVAL:-30} timeout=${PR_CYCLE_TIMEOUT:-2700}
-  local max=${PR_CYCLE_MAX_FIX_ROUNDS:-2} started pr wf sha sha2 checks total pending fails fail_file count marker empty=0
-  case "$interval$timeout$max" in *[!0-9]*) die 2 "PR_CYCLE_INTERVAL, _TIMEOUT and _MAX_FIX_ROUNDS must be whole numbers." ;; esac
-  started=$(date +%s)
+# ci_read <n> — one read of the PR's CI, no sleeping. Sets ci_sha, ci_checks and
+# ci_total, and returns 0 when CI has settled on the head, 10 while a run is still
+# going, 11 when no run has actually run yet (only draft-time skips, or nothing).
+ci_read() {
+  local n=$1 pr wf pending
   pr=$(pr_json "$n")
   [ "$(printf '%s' "$pr" | jq -r .draft)" = true ] \
     && die 5 "PR #$n is a draft, and CI skips drafts. Mark it ready first: pr-cycle.sh ship $n"
-  sha=$(printf '%s' "$pr" | jq -r .head.sha)
-  say "waiting on PR #$n at ${sha:0:8} (every ${interval}s, deadline ${timeout}s)"
-  while : ; do
-    # Workflow runs first. While a PR was a draft every run on this commit
-    # completed as `skipped`, and the run that marking ready starts takes a few
-    # seconds to register. Reading check runs alone in that window reports the
-    # draft's skips as green. So wait until at least one run actually ran and
-    # every run on the commit has completed.
-    wf=$(api "repos/$repo_slug/actions/runs?head_sha=$sha&per_page=100" \
-           --jq "$workflow_filter" 2>/dev/null) || die 3 "cannot read workflow runs for ${sha:0:8}."
-    checks=$(checks_for "$sha") || die 3 "cannot read checks for ${sha:0:8}. Do not treat this as a pass."
-    total=$(printf '%s' "$checks" | jq length)
-    pending=$(printf '%s' "$checks" | jq '[.[] | select(.bucket == "pending")] | length')
-    if [ "$wf" = settled ] && [ "$pending" -eq 0 ]; then
-      [ "$total" -gt 0 ] || die 3 "every workflow run on ${sha:0:8} finished but reported no checks; nothing is green."
-      break
-    fi
-    if [ "$wf" = none ]; then
-      empty=$((empty + 1))
-      [ "$empty" -le 4 ] || die 3 "no workflow run has actually run on ${sha:0:8}. CI has not tested it; nothing is green."
-    fi
-    [ $(( $(date +%s) - started )) -lt "$timeout" ] \
-      || die 4 "timed out with checks pending: $(printf '%s' "$checks" | jq -r '[.[] | select(.bucket=="pending") | .name] | join(", ")')."
-    sleep "$interval"
-  done
-  sha2=$(pr_json "$n" | jq -r .head.sha)
-  [ "$sha2" = "$sha" ] || die 3 "PR #$n's head moved to ${sha2:0:8} during the wait; these checks describe ${sha:0:8}. Run wait again."
+  ci_sha=$(printf '%s' "$pr" | jq -r .head.sha)
+  # Workflow runs first. While a PR was a draft every run on this commit
+  # completed as `skipped`, and the run that marking ready starts takes a few
+  # seconds to register. Reading check runs alone in that window reports the
+  # draft's skips as green. So CI has settled only when at least one run actually
+  # ran and every run on the commit has completed.
+  wf=$(api "repos/$repo_slug/actions/runs?head_sha=$ci_sha&per_page=100" \
+         --jq "$workflow_filter" 2>/dev/null) || die 3 "cannot read workflow runs for ${ci_sha:0:8}."
+  ci_checks=$(checks_for "$ci_sha") || die 3 "cannot read checks for ${ci_sha:0:8}. Do not treat this as a pass."
+  ci_total=$(printf '%s' "$ci_checks" | jq length)
+  pending=$(printf '%s' "$ci_checks" | jq '[.[] | select(.bucket == "pending")] | length')
+  case $wf in
+    none) return 11 ;;
+    settled) [ "$pending" -eq 0 ] && return 0 ;;
+  esac
+  return 10
+}
 
-  printf '%s' "$checks" | jq -r '.[] | "  \(.bucket | ascii_upcase)\t\(.name)\t\(.link // "")"' | sort
-  fails=$(printf '%s' "$checks" | jq '[.[] | select(.bucket == "fail" or .bucket == "cancel")] | length')
+# ci_verdict <n> — the verdict on what ci_read saw (CI has settled): print the
+# checks, count fix rounds, and exit 0, 1 or 6 the way `wait` always has.
+#
+# A fix round is a distinct red result: the head sha plus the ids of its failed
+# runs. Reading the same red result twice (two events about one run, a status
+# call after a wait) counts once; a re-run that fails again counts again.
+ci_verdict() {
+  local n=$1 fails fail_file key count marker
+  [ "$ci_total" -gt 0 ] || die 3 "every workflow run on ${ci_sha:0:8} finished but reported no checks; nothing is green."
+  printf '%s' "$ci_checks" | jq -r '.[] | "  \(.bucket | ascii_upcase)\t\(.name)\t\(.link // "")"' | sort
+  fails=$(printf '%s' "$ci_checks" | jq '[.[] | select(.bucket == "fail" or .bucket == "cancel")] | length')
   mkdir -p "$state_dir"; fail_file="$state_dir/pr-$n-ci-fails"
   if [ "$fails" -gt 0 ]; then
-    count=$(( $(cat "$fail_file" 2>/dev/null || echo 0) + 1 ))
-    echo "$count" >"$fail_file"
-    if [ "$count" -gt "$max" ]; then
-      die 6 "CI failed on PR #$n for the $count time; the cap is $max fix rounds." \
+    key="$ci_sha $(printf '%s' "$ci_checks" | jq -r '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .link // .name] | sort | join(",")')"
+    # A counter file from before rounds were keyed holds a bare number; start over.
+    grep -q ' ' "$fail_file" 2>/dev/null || rm -f "$fail_file"
+    grep -qxF "$key" "$fail_file" 2>/dev/null || echo "$key" >>"$fail_file"
+    count=$(wc -l <"$fail_file" | tr -d ' ')
+    if [ "$count" -gt "$max_rounds" ]; then
+      label_add "$n" "$label_needs_human"
+      die 6 "CI failed on PR #$n for the $count time; the cap is $max_rounds fix rounds." \
         "Stop and ask the user: name the failing checks, the root cause you found, and what each round tried."
     fi
-    die 1 "CI is NOT green on PR #$n (failure $count of $max allowed fix rounds)." \
+    die 1 "CI is NOT green on PR #$n (failure $count of $max_rounds allowed fix rounds)." \
       "Root-cause it (gh run view <id> --log-failed), fix, then: pr-cycle.sh unready $n; push; pr-cycle.sh gate; pr-cycle.sh ship $n"
   fi
   rm -f "$fail_file"
-  [ "$(printf '%s' "$checks" | jq '[.[] | select(.bucket == "pass")] | length')" -gt 0 ] \
-    || say "WARNING: every check was skipped on ${sha:0:8}; nothing actually ran."
-  say "all checks passed on PR #$n (${sha:0:8})."
+  [ "$(printf '%s' "$ci_checks" | jq '[.[] | select(.bucket == "pass")] | length')" -gt 0 ] \
+    || say "WARNING: every check was skipped on ${ci_sha:0:8}; nothing actually ran."
+  say "all checks passed on PR #$n (${ci_sha:0:8})."
   # Advisory, as in wait-ci.sh: findings are never a gate here, but merge reads them.
   marker=$(review_marker "$n")
-  "$here/review-verdict.sh" "$sha" "$marker" "$n" || true
+  "$here/review-verdict.sh" "$ci_sha" "$marker" "$n" || true
   return 0
+}
+
+# status <n> — the event-driven read. Called once each time a CI or review event
+# wakes the session; never loops, never sleeps. Exit 7 means "not settled yet:
+# end the turn and let the next event wake you".
+cmd_status() {
+  local n=$1 rc=0
+  ci_read "$n" || rc=$?
+  case $rc in
+    0) ci_verdict "$n" ;;
+    10) say "CI is still running on PR #$n (${ci_sha:0:8}): $(printf '%s' "$ci_checks" | jq -r '[.[] | select(.bucket=="pending") | .name] | join(", ")')"
+        say "nothing to do yet; the next CI event will wake you."; exit 7 ;;
+    11) say "no CI run has started on PR #$n (${ci_sha:0:8}) yet; the next CI event will wake you."; exit 7 ;;
+  esac
+}
+
+# wait <n> — the blocking fallback, for a session with no event channel (a local
+# CLI session). It polls GitHub, so a cloud session or thread uses ship + status.
+cmd_wait() {
+  local n=$1 interval=${PR_CYCLE_INTERVAL:-30} timeout=${PR_CYCLE_TIMEOUT:-2700}
+  local started rc sha empty=0
+  case "$interval$timeout" in *[!0-9]*) die 2 "PR_CYCLE_INTERVAL and PR_CYCLE_TIMEOUT must be whole numbers." ;; esac
+  started=$(date +%s)
+  say "waiting on PR #$n (every ${interval}s, deadline ${timeout}s)"
+  while : ; do
+    rc=0; ci_read "$n" || rc=$?
+    [ -n "${sha-}" ] || sha=$ci_sha
+    [ "$rc" -eq 0 ] && break
+    if [ "$rc" -eq 11 ]; then
+      empty=$((empty + 1))
+      [ "$empty" -le 4 ] || die 3 "no workflow run has actually run on ${ci_sha:0:8}. CI has not tested it; nothing is green."
+    fi
+    [ $(( $(date +%s) - started )) -lt "$timeout" ] \
+      || die 4 "timed out with checks pending: $(printf '%s' "$ci_checks" | jq -r '[.[] | select(.bucket=="pending") | .name] | join(", ")')."
+    sleep "$interval"
+  done
+  [ "$ci_sha" = "$sha" ] || die 3 "PR #$n's head moved to ${ci_sha:0:8} during the wait; these checks describe ${sha:0:8}. Run wait again."
+  ci_verdict "$n"
+}
+
+# ship <n> [--wait] — mark ready, take the PR as attended, then hand off to events:
+# the caller subscribes to the PR's activity and ends its turn. --wait blocks
+# instead (wait, above), for a session that has no event channel.
+cmd_ship() {
+  local n=$1 mode=events
+  shift
+  case ${1-} in
+    '') ;;
+    --wait) mode=wait ;;
+    *) die 2 "ship: unknown argument '$1'." ;;
+  esac
+  cmd_ready "$n" || return
+  label_add "$n" "$label_attended"
+  if [ "$mode" = wait ]; then cmd_wait "$n"; return; fi
+  say "PR #$n is ready and marked $label_attended, so the PR tender leaves it to you."
+  say "Next: subscribe to the PR's activity (subscribe_pr_activity $repo_slug#$n) and END THE TURN."
+  say "On each CI or review event, run: pr-cycle.sh status $n   (exit code is the verdict; 7 = not settled yet)."
+  say "No session to keep it? Run pr-cycle.sh handoff $n and the tender takes the next red CI or finding."
+  say "No event channel (local CLI)? Run pr-cycle.sh ship $n --wait, backgrounded, instead."
+}
+
+# handoff <n> — give the PR back to the GitHub-triggered tender (factory:tend-pr).
+cmd_handoff() {
+  local n=$1
+  label_rm "$n" "$label_attended"
+  say "PR #$n is no longer attended: the next red CI or review finding labels it and starts the tender."
 }
 
 cmd_merge() {
@@ -352,7 +454,7 @@ cmd_merge() {
   checks=$(checks_for "$sha") || die 3 "cannot read checks for ${sha:0:8}."
   missing=$(jq -rn --argjson req "$required" --argjson c "$checks" \
     '$req - [$c[] | select(.bucket == "pass" or .bucket == "skipping") | .name] | join(", ")')
-  [ -z "$missing" ] || die 5 "required checks not green on ${sha:0:8}: $missing. Run: pr-cycle.sh wait $n"
+  [ -z "$missing" ] || die 5 "required checks not green on ${sha:0:8}: $missing. Run: pr-cycle.sh status $n"
 
   verdict_rc=0
   "$here/review-verdict.sh" "$sha" "$(review_marker "$n")" "$n" >/dev/null || verdict_rc=$?
@@ -382,7 +484,9 @@ case $sub in
   ready)   need_pr "${1-}"; cmd_ready "$1" ;;
   unready) need_pr "${1-}"; cmd_unready "$1" ;;
   wait)    need_pr "${1-}"; cmd_wait "$1" ;;
-  ship)    need_pr "${1-}"; cmd_ready "$1" && cmd_wait "$1" ;;
+  status)  need_pr "${1-}"; cmd_status "$1" ;;
+  ship)    need_pr "${1-}"; cmd_ship "$@" ;;
+  handoff) need_pr "${1-}"; cmd_handoff "$1" ;;
   merge)   need_pr "${1-}"; cmd_merge "$@" ;;
-  *) die 2 "usage: pr-cycle.sh gate | open [--base B] --title T --body-file F | ready|unready|wait|ship <n> | merge <n> [--dispositioned] [--delete-branch]" ;;
+  *) die 2 "usage: pr-cycle.sh gate | open [--base B] --title T --body-file F | ready|unready|status|wait|handoff <n> | ship <n> [--wait] | merge <n> [--dispositioned] [--delete-branch]" ;;
 esac

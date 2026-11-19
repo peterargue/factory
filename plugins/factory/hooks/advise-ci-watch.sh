@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # PostToolUse:Bash hook — after a command that puts a new head commit on a branch
 # with an open PR, inject guidance on how to watch CI without polling, plus the
-# PR's live review-thread state.
+# PR's live review-thread state. The guidance is the event-driven cycle: ship,
+# subscribe, `pr-cycle.sh status` on each event; never a poll.
 #
 # Fires on `gh pr create` unconditionally, and on `git push` only when the current
 # branch actually has an open PR (otherwise no checks will run and the advice is
@@ -59,16 +60,16 @@ if [ -n "$pr" ]; then
 fi
 
 guidance=$(cat <<'EOF'
-CI will run on the head commit you just pushed. Do NOT schedule a wake-up, CronCreate, or a manual poll loop to check it.
+CI will run on the head commit you just pushed. Do NOT schedule a wake-up, CronCreate, sleep, or a poll loop to check it.
 
-Instead:
-1. Get the PR number: gh pr view --json number --jq .number
-2. Launch ONE background CI watch via the Bash tool with run_in_background=true:
-     ${CLAUDE_PLUGIN_ROOT}/scripts/wait-ci.sh <number>
-   It blocks until every check finishes and the harness wakes you when it exits, so you never poll. A later push re-arms this hook.
-3. Its EXIT CODE IS THE VERDICT, so do not second-guess it. It wraps "gh pr checks --watch" only to block - that command has been observed on this repo exiting zero while a job was failing - and then reads the authoritative check list itself, exiting 0 only when it positively observed at least one check and every one of them passing. Non-zero: 1 = a check failed or was cancelled, 2 = usage or environment problem, 3 = status could not be determined, 4 = timed out with checks still pending. None of those are green.
-4. On a genuine failure, inspect with: gh run view --log-failed
-   Root-cause it, fix, commit, push (which re-arms the watch).
+The factory is event-driven:
+1. A PR is shipped once, after its last push: ${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh ship <number>. It marks the PR ready (gated) and labels it factory:attended, then returns.
+2. In a cloud session or project thread, subscribe to the PR's activity (subscribe_pr_activity) and END THE TURN. Each CI result and review arrives as an event. On each one run, once:
+     ${CLAUDE_PLUGIN_ROOT}/scripts/pr-cycle.sh status <number>
+   Its EXIT CODE IS THE VERDICT: 0 green (it then prints the review verdict), 1 red with a fix round left, 6 red past the cap (ask the user), 7 not settled yet (end the turn again), 3 unknown, 5 refused. None but 0 is green.
+3. In a local CLI session, which has no event channel, run pr-cycle.sh ship <number> --wait once, backgrounded (run_in_background=true); the harness wakes you when it exits.
+4. Leaving a PR you shipped? Run pr-cycle.sh handoff <number>: the next red CI or review finding labels it and the GitHub-triggered tender (factory:tend-pr) takes one fix round.
+5. On a genuine failure, inspect with: gh run view <run-id> --log-failed (or the REST jobs/<id>/logs route in the cloud). Root-cause it, fix, unready, push, gate, ship again.
 
 A green check does NOT mean the PR was reviewed, and this repo has merged a PR carrying a live finding. claude-review.yml has never put a body on its own review and every review it submits is COMMENTED, so none of "gh pr view --comments", reviewDecision, or a green check reflects open findings. Since around PR #324 the bot also posts a prose summary as a top-level comment, which is worse than silence: it reads like the whole review while carrying no file:line anchor, no thread id and no resolution state.
 
@@ -78,7 +79,7 @@ Then answer every thread with one of the factory's three replies (fixed with a c
 
 If a note appears on the PR saying it has NO RECORDED REVIEW, take that literally: the PR is unreviewed and needs a human, and the note is not a verdict on the diff. One cause is structural - the reviewer refuses to run at all when a PR edits .github/workflows/claude-review.yml, because a PR must not be able to edit its own reviewer.
 
-Also note: checks that are not required by the branch ruleset (FACTORY.md lists them under ci.advisory_checks) can be red on a PR GitHub still calls mergeable. wait-ci.sh counts them; read any red one yourself, the failure is real.
+Also note: checks that are not required by the branch ruleset (FACTORY.md lists them under ci.advisory_checks) can be red on a PR GitHub still calls mergeable. pr-cycle.sh status counts them; read any red one yourself, the failure is real.
 EOF
 )
 # The text above is quoted so nothing in it expands; the plugin path is the one

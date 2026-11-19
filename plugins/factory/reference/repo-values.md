@@ -30,6 +30,8 @@ When a skill names one of the literals on the left, read the key on the right.
 | `~/dev/tsglobal-rollout`, `run-job.sh`, `prod-read.sh`, `tf-read.sh`, `tf-apply-saved.sh` | `deploy.rollout_folder`, `deploy.rollout_wrappers` |
 | office, Grafana, terraform, sheet imports | `FACTORY.md` § Deploy |
 | codev-memory, `log-guard-denial` | `FACTORY.md` § People and channels |
+| knowledge-base, project memory, codev, `~/.agents` (where a fact is saved or looked up) | `FACTORY.md` `memory.*`; the plugin repo's `MEMORY-MAP.md` says what each owns |
+| `factory-signal.yml`, the PR tender task | `ci.signal_workflow`, `ci.tender` |
 | the authenticated browser, the change docs as singletons | `FACTORY.md` § Shared singletons |
 
 A slot set to `none` means the step does not apply in this repo: skip it rather than

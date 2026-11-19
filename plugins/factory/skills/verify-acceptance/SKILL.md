@@ -27,7 +27,7 @@ verdict per criterion with the evidence it observed.
 It sits after the gate and before the PR is marked ready (`pr-cycle.sh ship`):
 
 ```
-build → gate (pr-cycle.sh gate) → verify-acceptance → PR body → pr-cycle.sh ship → CI + Claude review
+build → gate (pr-cycle.sh gate) → verify-acceptance → PR body → pr-cycle.sh ship → CI + Claude review (as PR events)
 ```
 
 It does not replace the builder's own "every acceptance criterion met" line in the

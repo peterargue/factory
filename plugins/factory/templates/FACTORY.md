@@ -64,7 +64,9 @@ commands:
 ci:
   cycle: factory:pr-cycle        # the plugin's scripts/pr-cycle.sh: gate, open draft, ship, merge
   max_fix_rounds: 2              # CI failures per PR before asking; PR_CYCLE_MAX_FIX_ROUNDS
-  wait: factory:wait-ci          # the plugin's scripts/wait-ci.sh <pr>
+  wait: factory:wait-ci           # legacy blocking watch (GraphQL, polls): local CLI only; prefer pr-cycle.sh status on PR events
+  signal_workflow: .github/workflows/factory-signal.yml   # copy of templates/factory-signal.yml; labels red CI and review findings
+  tender: factory:tend-pr        # skill the GitHub-triggered scheduled task runs on a labelled PR; `none` if no task is set up
   review_comments: factory:pr-review-comments
   review_check: review / Claude review   # caller job / reusable job name
   review_workflow: .github/workflows/claude-review.yml   # the thin caller
@@ -86,6 +88,12 @@ acceptance:                      # what the verify-acceptance verifier needs to 
   db_read: none                  # read-only database access
   production: never              # the verifier never touches production
   stop: none                     # what tears down serve or serve_bearer
+
+memory:                          # where facts live; the factory's MEMORY-MAP.md says what each place owns
+  knowledge_base: none           # business facts (a repo or wiki), if any
+  project_memory: none           # the claude.ai project whose shared memory holds in-flight work, if any
+  local_memory: none             # a local store such as codev (`codev search --project <slug>`), if any
+  conventions: none              # personal cross-harness agent conventions, such as ~/.agents/AGENTS.md
 
 invariants: <path>#<heading>     # re-walk at every integration gate
 
