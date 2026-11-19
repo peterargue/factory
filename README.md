@@ -20,6 +20,7 @@ Everything runs as native Claude Code (CLI, cloud sessions, scheduled tasks and
 | `plugins/factory/templates/FACTORY.md` | The contract a new repo fills in |
 | `plugins/factory/templates/init/` | What `factory:init` scaffolds: CI, the review caller, the ruleset, the OpenSpec config, the Approvals section |
 | `.github/workflows/claude-review.yml` | The reviewer, as a reusable workflow |
+| `plugins/factory/evals/` | `claude plugin eval` suites for `execute-issue` and the reviewer, run locally after each model release (see its README) |
 | `tests/` | Fixture tests for the scripts and the review workflow's backstop, run by this repo's CI |
 
 ## Join a repo to the factory

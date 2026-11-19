@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Shell syntax
-        run: for f in plugins/factory/hooks/*.sh plugins/factory/scripts/*.sh tests/*.sh; do bash -n "$f"; done
+        run: for f in plugins/factory/hooks/*.sh plugins/factory/scripts/*.sh tests/*.sh plugins/factory/evals/*/_fixture/*.sh plugins/factory/evals/*/*/fixture.sh; do bash -n "$f"; done
       - name: Manifests parse
         run: jq -e . .claude-plugin/marketplace.json plugins/factory/.claude-plugin/plugin.json plugins/factory/hooks/hooks.json >/dev/null
       - name: Scripts resolve the caller's repository
@@ -37,5 +37,7 @@ jobs:
         run: tests/check-doctor.sh
       - name: The rendered standalone reviewer is valid and current
         run: tests/check-render-review-workflow.sh
+      - name: The reviewer evals test the shipped reviewer prompt
+        run: tests/sync-reviewer-evals.sh --check
       - name: The scorecard counts what it says it counts
         run: tests/check-scorecard.sh
