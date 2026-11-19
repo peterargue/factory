@@ -13,12 +13,14 @@ Everything runs as native Claude Code (CLI, cloud sessions, scheduled tasks and
 
 | Path | What |
 |---|---|
-| `plugins/factory/skills/` | `spec-feature`, `spec-issue`, `execute-issue`, `implement-feature`, `verify-acceptance`, `run-rollout`, `review-sessions`, plus `init` (join a repo) and `doctor` (check it still conforms), invoked as `factory:<name>` |
-| `plugins/factory/hooks/` | `deny-stale-pr` (no PR from a head behind its base), `advise-ci-watch` (watch CI with `wait-ci.sh`, never a poll loop), `deny-ai-attribution` (on when `FACTORY.md` sets `ai_attribution: deny`), `deny-unverified-ready` (no PR marked ready without a green gate stamp on HEAD's tree and a scope-judge pass). Each hook does nothing in a repo without `FACTORY.md` |
-| `plugins/factory/scripts/` | `pr-cycle.sh` (gate, open draft, ship, merge; REST-only), `gate-stamp.sh` (runs `commands.gate`, stamps HEAD's tree on green), `scope-judge.sh` (diff vs the PR and its spec, via `claude -p`), `wait-ci.sh` (exit code is the CI verdict), `pr-review-comments.sh` (all three review endpoints), `scorecard.sh` and `scorecard-dataset.sh` (the weekly factory numbers `review-sessions` publishes), and the two verdict helpers |
+| `plugins/factory/skills/` | `spec-feature`, `spec-issue`, `execute-issue`, `implement-feature`, `verify-acceptance`, `run-rollout`, `review-sessions`, `tend-pr` (one fix round on a PR the signal workflow flagged), plus `init` (join a repo) and `doctor` (check it still conforms), invoked as `factory:<name>` |
+| `plugins/factory/hooks/` | `deny-stale-pr` (no PR from a head behind its base), `advise-ci-watch` (after a push: ship, subscribe to the PR's events, `pr-cycle.sh status` on each; never a poll), `deny-ai-attribution` (on when `FACTORY.md` sets `ai_attribution: deny`), `deny-unverified-ready` (no PR marked ready without a green gate stamp on HEAD's tree and a scope-judge pass). Each hook does nothing in a repo without `FACTORY.md` |
+| `plugins/factory/scripts/` | `pr-cycle.sh` (gate, open draft, ship, status, handoff, merge; REST-only), `gate-stamp.sh` (runs `commands.gate`, stamps HEAD's tree on green), `scope-judge.sh` (diff vs the PR and its spec, via `claude -p`), `wait-ci.sh` (legacy blocking watch, local CLI only), `pr-review-comments.sh` (all three review endpoints), `scorecard.sh` and `scorecard-dataset.sh` (the weekly factory numbers `review-sessions` publishes), and the two verdict helpers |
 | `plugins/factory/scripts/doctor.sh`, `render-review-workflow.sh` | `factory:doctor`'s checks (`--remote` adds the ruleset and secret); a standalone copy of the reviewer for repos under another owner |
 | `plugins/factory/templates/FACTORY.md` | The contract a new repo fills in |
 | `plugins/factory/templates/init/` | What `factory:init` scaffolds: CI, the review caller, the ruleset, the OpenSpec config, the Approvals section |
+| `plugins/factory/templates/factory-signal.yml` | The signal workflow a repo copies: labels a PR on red CI or review findings |
+| `MEMORY-MAP.md` | Which store owns which fact: the repo, the knowledge base, project memory, codev, `~/.agents` |
 | `.github/workflows/claude-review.yml` | The reviewer, as a reusable workflow |
 | `plugins/factory/evals/` | `claude plugin eval` suites for `execute-issue` and the reviewer, run locally after each model release (see its README) |
 | `tests/` | Fixture tests for the scripts and the review workflow's backstop, run by this repo's CI |
@@ -69,8 +71,51 @@ cannot read, and finishes with a clean `factory:doctor`. By hand:
    reports as `review / Claude review`, so a ruleset that required `Claude review`
    must be updated to the new name.
 
-4. Check it: `plugins/factory/scripts/doctor.sh --remote` from the repo, or the
+4. Copy `plugins/factory/templates/factory-signal.yml` to `.github/workflows/` and set
+   its two workflow names to this repo's CI and review workflows. Then set up the PR
+   tender (next section).
+5. Check it: `plugins/factory/scripts/doctor.sh --remote` from the repo, or the
    `factory:doctor` skill, which also checks the tracker.
+
+## Event-driven PRs
+
+Nothing in the factory polls GitHub. Two paths cover every PR:
+
+- **Attended.** The session that built a PR ships it with `pr-cycle.sh ship <n>`, which
+  marks it ready and labels it `factory:attended`, then subscribes to the PR's activity
+  and ends its turn. CI results and reviews arrive as events, and the session runs
+  `pr-cycle.sh status <n>` once per event; exit `7` means "not settled, end the turn".
+  A local CLI session, which has no event channel, uses `ship <n> --wait` instead.
+- **Unattended.** When no session holds a PR (it ran `pr-cycle.sh handoff <n>`, or a
+  person opened it), the repo's signal workflow labels it `factory:ci-red` or
+  `factory:review-findings` when CI goes red on its head or a review of its head has
+  findings (the bot's marker, or a person's "request changes"). That label starts a
+  scheduled task with a GitHub trigger, which runs `factory:tend-pr`: one root-caused fix
+  round, recorded as a `factory:tend-round-<k>` label and a PR comment. Past
+  `ci.max_fix_rounds` the PR is labelled `factory:needs-human` and left alone. The tender
+  never merges.
+
+Labels are the only shared state. `factory:attended` and `factory:needs-human` keep the
+signal workflow off a PR; removing `factory:attended` hands a PR to the tender.
+
+### Set up the tender (once per repo)
+
+Scheduled-task GitHub triggers fire on pull request, issue and release events only, which
+is why the signal workflow turns CI and reviews into labels. The Claude GitHub App must be
+installed on the repo. At [claude.ai/code/routines](https://claude.ai/code/routines),
+**New task**:
+
+- **Name**: `<repo>: tend flagged PRs`
+- **Prompt**: `A pull request in this repository was labelled for the factory. Use the
+  factory:tend-pr skill on the pull request named in the GitHub event that started this
+  run, and follow it exactly.`
+- **Repository**: the repo (its `.claude/settings.json` enables the plugin). The default
+  environment is enough unless the gate needs more.
+- **Trigger**: GitHub event, *Pull request → labeled*, filters *Labels is one of*
+  `factory:ci-red`, `factory:review-findings`, and *Is draft* `false`.
+- **Connectors**: none.
+
+Then set `ci.tender: factory:tend-pr` in the repo's `FACTORY.md`.
 
 ## Changing the factory
 

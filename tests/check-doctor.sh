@@ -28,6 +28,7 @@ make_repo() {
       -e '/{{toolchain_steps}}/d' "$plugin/templates/init/ci.yml" > "$r/.github/workflows/ci.yml"
   sed -e 's/{{default_branch}}/main/g; s#{{feature_prefix}}#feature/#g; s/{{version}}/'"$(jq -r .version "$plugin/.claude-plugin/plugin.json")"'/' \
       "$plugin/templates/init/claude-review-caller.yml" > "$r/.github/workflows/claude-review.yml"
+  cp "$plugin/templates/factory-signal.yml" "$r/.github/workflows/factory-signal.yml"
 }
 run() { (cd "$1" && "$doctor" 2>&1) ; }
 expect() { # <label> <want-exit> <want-substring> <repo>
