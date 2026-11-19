@@ -13,14 +13,19 @@ Everything runs as native Claude Code (CLI, cloud sessions, scheduled tasks and
 
 | Path | What |
 |---|---|
-| `plugins/factory/skills/` | `spec-feature`, `spec-issue`, `execute-issue`, `implement-feature`, `verify-acceptance`, `run-rollout`, `review-sessions`, invoked as `factory:<name>` |
+| `plugins/factory/skills/` | `spec-feature`, `spec-issue`, `execute-issue`, `implement-feature`, `verify-acceptance`, `run-rollout`, `review-sessions`, plus `init` (join a repo) and `doctor` (check it still conforms), invoked as `factory:<name>` |
 | `plugins/factory/hooks/` | `deny-stale-pr` (no PR from a head behind its base), `advise-ci-watch` (watch CI with `wait-ci.sh`, never a poll loop), `deny-ai-attribution` (on when `FACTORY.md` sets `ai_attribution: deny`), `deny-unverified-ready` (no PR marked ready without a green gate stamp on HEAD's tree and a scope-judge pass). Each hook does nothing in a repo without `FACTORY.md` |
 | `plugins/factory/scripts/` | `pr-cycle.sh` (gate, open draft, ship, merge; REST-only), `gate-stamp.sh` (runs `commands.gate`, stamps HEAD's tree on green), `scope-judge.sh` (diff vs the PR and its spec, via `claude -p`), `wait-ci.sh` (exit code is the CI verdict), `pr-review-comments.sh` (all three review endpoints), and the two verdict helpers |
+| `plugins/factory/scripts/doctor.sh`, `render-review-workflow.sh` | `factory:doctor`'s checks (`--remote` adds the ruleset and secret); a standalone copy of the reviewer for repos under another owner |
 | `plugins/factory/templates/FACTORY.md` | The contract a new repo fills in |
+| `plugins/factory/templates/init/` | What `factory:init` scaffolds: CI, the review caller, the ruleset, the OpenSpec config, the Approvals section |
 | `.github/workflows/claude-review.yml` | The reviewer, as a reusable workflow |
 | `tests/` | Fixture tests for the scripts and the review workflow's backstop, run by this repo's CI |
 
 ## Join a repo to the factory
+
+Run the `factory:init` skill in the repo: it does the steps below, asks for what it
+cannot read, and finishes with a clean `factory:doctor`. By hand:
 
 1. Copy `plugins/factory/templates/FACTORY.md` to the repo root and fill in every value.
    Its presence is what turns the hooks and scripts on.
@@ -57,9 +62,14 @@ Everything runs as native Claude Code (CLI, cloud sessions, scheduled tasks and
    GitHub only lets a private reusable workflow be called from repos with the same
    owner, so this works for repos under `peterargue`, and only after this repo's
    **Settings → Actions → Access** allows it. A repo under another owner, such as
-   `tsglobal-ca/platform`, keeps its own copy of the workflow instead. The called check
+   `tsglobal-ca/platform`, keeps its own copy of the workflow instead, written by
+   `plugins/factory/scripts/render-review-workflow.sh` so `factory:doctor` can tell when
+   it falls behind. The called check
    reports as `review / Claude review`, so a ruleset that required `Claude review`
    must be updated to the new name.
+
+4. Check it: `plugins/factory/scripts/doctor.sh --remote` from the repo, or the
+   `factory:doctor` skill, which also checks the tracker.
 
 ## Changing the factory
 
