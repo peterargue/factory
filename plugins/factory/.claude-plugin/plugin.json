@@ -1,7 +1,7 @@
 {
   "name": "factory",
   "displayName": "Software Factory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Spec-to-production pipeline: spec, build, review, roll out, and improve, driven by each repo's FACTORY.md",
   "author": { "name": "Peter Argue" },
   "keywords": ["workflow", "openspec", "linear", "ci", "review"]

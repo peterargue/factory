@@ -94,8 +94,11 @@ approval message. If the folder isn't listed, ask the user to run
 message as the plan, so it is still one ask.
 
 Put this in the brief, word for word: "Send no Slack messages, emails or comments to
-anyone. Report results back to this thread only." The cloud thread owns every message;
-a Mac session that posts on its own duplicates or breaks the group-chat-only rule.
+anyone, and commit or push nothing. Report results back to this thread only." The cloud
+thread owns every message and every repo write; a Mac session that posts on its own
+duplicates or breaks the group-chat-only rule. Findings for the knowledge base come back
+in the report, and the thread writes them through GitHub: the guard refuses a push from
+the Mac, which leaves the user a command to run.
 
 In the session:
 
